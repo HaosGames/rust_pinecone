@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Error;
 use futures::SinkExt;
 use crate::frames::Frame;
-use crate::PineconeCodec;
+use crate::{PineconeCodec, TreeAnnouncement};
 use log::{debug, info, trace};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +38,13 @@ pub enum Event {
 struct SwitchState {
     pub(crate) public_key: VerificationKey,
     pub(crate) sockets: RwLock<HashMap<VerificationKey, Mutex<Framed<TcpStream, PineconeCodec>>>>,
+    ports: RwLock<HashMap<VerificationKey, Port>>,
+}
+struct TreeState {
+    parent: RwLock<VerificationKey>,
+    announcements: RwLock<HashMap<VerificationKey, TreeAnnouncement>>,
+    sequence: RwLock<SequenceNumber>,
+    ordering: RwLock<SequenceNumber>,
 }
 pub struct Router {
     peer_handles: Mutex<Vec<JoinHandle<()>>>,
@@ -46,6 +53,7 @@ pub struct Router {
     pub(crate) download: Arc<Sender<Frame>>,
 
     switch: Arc<SwitchState>,
+    tree: Arc<TreeState>,
 }
 impl Router {
     pub fn new(key: VerificationKey, download: Sender<Frame>, upload: Receiver<Event>) -> Self {
@@ -55,7 +63,14 @@ impl Router {
             download: Arc::new(download),
             switch: Arc::new(SwitchState {
                 public_key: key,
-                sockets: Default::default()
+                sockets: Default::default(),
+                ports: Default::default()
+            }),
+            tree: Arc::new(TreeState {
+                parent: RwLock::new(key),
+                announcements: Default::default(),
+                sequence: RwLock::new(0),
+                ordering: RwLock::new(0)
             })
         }
     }
