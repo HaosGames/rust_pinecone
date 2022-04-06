@@ -1,4 +1,4 @@
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::time::SystemTime;
 use bytes::{Buf, BufMut, BytesMut};
 use log::{debug, trace};
@@ -179,6 +179,13 @@ impl Encoder<Frame> for PineconeCodec {
         Ok(())
     }
 }
+fn decode_key(src: &mut BytesMut) -> VerificationKey {
+    let mut key: VerificationKey = [0;32];
+    for i in 0..32 {
+        key[i] = src.get_u8();
+    }
+    key
+}
 impl Decoder for PineconeCodec {
     type Item = Frame;
     type Error = std::io::Error;
@@ -212,18 +219,12 @@ impl Decoder for PineconeCodec {
         }
         match frame_type {
             1  /*TreeAnnouncement*/ => {
-                let mut  root_key: VerificationKey = [0;32];
-                for mut digit in root_key {
-                    digit = src.get_u8();
-                }
+                let root_key = decode_key(src);
                 let root_sequence = src.get_u64();
                 let sig_len = src.get_u16();
                 let mut sigs = vec![];
                 for i in 0..sig_len {
-                    let mut sig_key: VerificationKey = [0;32];
-                    for mut digit in sig_key {
-                        digit = src.get_u8();
-                    }
+                    let sig_key = decode_key(src);
                     let sig_port = src.get_u64();
                     sigs.push(RootAnnouncementSignature {
                         signing_public_key: sig_key,
@@ -264,19 +265,13 @@ impl Decoder for PineconeCodec {
                 })))
             }
             3 /*SnekBootstrap*/ => {
-                let mut dest_key: VerificationKey = [0;32];
-                for mut digit in dest_key {
-                    digit = src.get_u8();
-                }
+                let dest_key = decode_key(src);
                 let source_len = src.get_u16();
                 let mut source = vec![];
                 for i in 0..source_len {
                     source.push(src.get_u64());
                 }
-                let mut root_key: VerificationKey = [0;32];
-                for mut digit in root_key {
-                    digit = src.get_u8();
-                }
+                let root_key = decode_key(src);
                 let root_sequence = src.get_u64();
                 let path_id = src.get_u64();
                 return Ok(Some(Frame::SnekBootstrap(SnekBootstrap {
@@ -292,23 +287,14 @@ impl Decoder for PineconeCodec {
                 for i in 0..dest_len {
                     dest.push(src.get_u64());
                 }
-                let mut dest_key: VerificationKey = [0;32];
-                for mut digit in dest_key {
-                    digit = src.get_u8();
-                }
+                let dest_key = decode_key(src);
                 let source_len = src.get_u16();
                 let mut source = vec![];
                 for i in 0..source_len {
                     source.push(src.get_u64());
                 }
-                let mut source_key: VerificationKey = [0;32];
-                for mut digit in source_key {
-                    digit = src.get_u8();
-                }
-                let mut root_key: VerificationKey = [0;32];
-                for mut digit in root_key {
-                    digit = src.get_u8();
-                }
+                let source_key = decode_key(src);
+                let root_key = decode_key(src);
                 let root_sequence = src.get_u64();
                 let path_id = src.get_u64();
                 return Ok(Some(Frame::SnekBootstrapACK(SnekBootstrapAck {
@@ -326,18 +312,9 @@ impl Decoder for PineconeCodec {
                 for i in 0..dest_len {
                     dest.push(src.get_u64());
                 }
-                let mut dest_key: VerificationKey = [0;32];
-                for mut digit in dest_key {
-                    digit = src.get_u8();
-                }
-                let mut source_key: VerificationKey = [0;32];
-                for mut digit in source_key {
-                    digit = src.get_u8();
-                }
-                let mut root_key: VerificationKey = [0;32];
-                for mut digit in root_key {
-                    digit = src.get_u8();
-                }
+                let dest_key = decode_key(src);
+                let source_key = decode_key(src);
+                let root_key = decode_key(src);
                 let root_sequence = src.get_u64();
                 let path_id = src.get_u64();
                 return Ok(Some(Frame::SnekSetup(SnekSetup {
@@ -349,14 +326,8 @@ impl Decoder for PineconeCodec {
                 })));
             }
             6 /*SnekSetupAck*/ => {
-                let mut dest_key: VerificationKey = [0;32];
-                for mut digit in dest_key {
-                    digit = src.get_u8();
-                }
-                let mut root_key: VerificationKey = [0;32];
-                for mut digit in root_key {
-                    digit = src.get_u8();
-                }
+                let dest_key = decode_key(src);
+                let root_key = decode_key(src);
                 let root_sequence = src.get_u64();
                 let path_id = src.get_u64();
                 return Ok(Some(Frame::SnekSetupACK(SnekSetupAck {
@@ -366,14 +337,8 @@ impl Decoder for PineconeCodec {
                 })));
             }
             7 /*SnekTeardown*/ => {
-                let mut dest_key: VerificationKey = [0;32];
-                for mut digit in dest_key {
-                    digit = src.get_u8();
-                }
-                let mut root_key: VerificationKey = [0;32];
-                for mut digit in root_key {
-                    digit = src.get_u8();
-                }
+                let dest_key = decode_key(src);
+                let root_key = decode_key(src);
                 let root_sequence = src.get_u64();
                 let path_id = src.get_u64();
                 return Ok(Some(Frame::SnekTeardown(SnekTeardown {
@@ -383,14 +348,8 @@ impl Decoder for PineconeCodec {
                 })));
             }
             8 /*SnekPacket*/ => {
-                let mut dest_key: VerificationKey = [0;32];
-                for mut digit in dest_key {
-                    digit = src.get_u8();
-                }
-                let mut source_key: VerificationKey = [0;32];
-                for mut digit in source_key {
-                    digit = src.get_u8();
-                }
+                let dest_key = decode_key(src);
+                let source_key = decode_key(src);
                 let payload_len = len -10-64;
                 let mut payload = vec![];
                 for i in 0..payload_len {
