@@ -36,16 +36,16 @@ pub enum Event {
     StopRouter,
 }
 struct SwitchState {
-
+    pub(crate) public_key: VerificationKey,
+    pub(crate) sockets: RwLock<HashMap<VerificationKey, Mutex<Framed<TcpStream, PineconeCodec>>>>,
 }
 pub struct Router {
     peer_handles: Mutex<Vec<JoinHandle<()>>>,
 
     pub(crate) upload: Receiver<Event>,
     pub(crate) download: Arc<Sender<Frame>>,
-    pub(crate) sockets: Arc<RwLock<HashMap<VerificationKey, Mutex<Framed<TcpStream, PineconeCodec>>>>>,
 
-    pub(crate) public_key: VerificationKey,
+    switch: Arc<SwitchState>,
 }
 impl Router {
     pub fn new(key: VerificationKey, download: Sender<Frame>, upload: Receiver<Event>) -> Self {
@@ -53,8 +53,10 @@ impl Router {
             peer_handles: Default::default(),
             upload,
             download: Arc::new(download),
-            sockets: Arc::new(Default::default()),
-            public_key: key,
+            switch: Arc::new(SwitchState {
+                public_key: key,
+                sockets: Default::default()
+            })
         }
     }
     pub fn spawn(mut self) -> JoinHandle<Self>{
@@ -70,7 +72,7 @@ impl Router {
                         }
                         Event::RemovePeer(_) => {}
                         Event::SendFrameToPeer { frame, to: peer } => {
-                            if let Some(socket) = self.sockets.read().await.get(&peer) {
+                            if let Some(socket) = self.switch.sockets.read().await.get(&peer) {
                                 socket.lock().await.send(frame).await.unwrap();
                             } else {
                                 debug!("No socket for {:?}", peer);
@@ -97,7 +99,7 @@ impl Router {
         }
     }
     async fn add_peer(&self, peer: VerificationKey, socket: Framed<TcpStream, PineconeCodec>) {
-        let mut sockets = self.sockets.write().await;
+        let mut sockets = self.switch.sockets.write().await;
         if sockets.contains_key(&peer) {
             info!("Couldn't add {:?} because it already exists", peer);
             return;
@@ -107,10 +109,10 @@ impl Router {
         self.spawn_peer(peer).await;
     }
     async fn spawn_peer(&self, peer: VerificationKey) {
-        let sockets = self.sockets.clone();
+        let switch = self.switch.clone();
         self.peer_handles.lock().await.push(tokio::spawn(async move {
             loop {
-                let sockets = sockets.read().await;
+                let sockets = switch.sockets.read().await;
                 if let Some(socket) = sockets.get(&peer) {
                     let mut socket = socket.lock().await;
                     if let Some(result) = socket.next().await {
