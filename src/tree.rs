@@ -1,8 +1,8 @@
-use std::cmp::Ordering;
-use std::fmt::{Display, Formatter};
 use crate::coordinates::Coordinates;
 use crate::frames::{SnekBootstrapAck, SnekSetup, TreePacket};
 use crate::router::{Port, SequenceNumber, VerificationKey};
+use std::cmp::Ordering;
+use std::fmt::{Display, Formatter};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Root {

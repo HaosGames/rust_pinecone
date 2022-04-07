@@ -1,8 +1,8 @@
-use std::fmt::{Display, Formatter};
-use std::time::SystemTime;
 use crate::coordinates::Coordinates;
 use crate::router::{Port, SequenceNumber, SnekPathId, VerificationKey};
 use crate::tree::{Root, RootAnnouncementSignature};
+use std::fmt::{Display, Formatter};
+use std::time::SystemTime;
 
 #[derive(Debug)]
 pub enum Frame {

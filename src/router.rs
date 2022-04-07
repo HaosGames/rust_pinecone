@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use std::io::Error;
-use futures::SinkExt;
 use crate::frames::Frame;
 use crate::{PineconeCodec, TreeAnnouncement};
+use futures::SinkExt;
 use log::{debug, info, trace};
+use std::collections::HashMap;
+use std::io::Error;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -31,20 +31,26 @@ pub enum Event {
         socket: Framed<TcpStream, PineconeCodec>,
     },
     HandleFrame(Frame),
-    SendFrameToPeer{frame: Frame, to: VerificationKey},
+    SendFrameToPeer {
+        frame: Frame,
+        to: VerificationKey,
+    },
     RemovePeer(VerificationKey),
     StopRouter,
 }
+#[derive(Clone)]
 struct SwitchState {
     pub(crate) public_key: VerificationKey,
-    pub(crate) sockets: RwLock<HashMap<VerificationKey, Mutex<Framed<TcpStream, PineconeCodec>>>>,
-    ports: RwLock<HashMap<VerificationKey, Port>>,
+    pub(crate) sockets:
+        Arc<RwLock<HashMap<VerificationKey, Mutex<Framed<TcpStream, PineconeCodec>>>>>,
+    ports: Arc<RwLock<HashMap<VerificationKey, Port>>>,
 }
+#[derive(Clone)]
 struct TreeState {
-    parent: RwLock<VerificationKey>,
-    announcements: RwLock<HashMap<VerificationKey, TreeAnnouncement>>,
-    sequence: RwLock<SequenceNumber>,
-    ordering: RwLock<SequenceNumber>,
+    parent: Arc<RwLock<VerificationKey>>,
+    announcements: Arc<RwLock<HashMap<VerificationKey, TreeAnnouncement>>>,
+    sequence: Arc<RwLock<SequenceNumber>>,
+    ordering: Arc<RwLock<SequenceNumber>>,
 }
 pub struct Router {
     peer_handles: Mutex<Vec<JoinHandle<()>>>,
@@ -52,8 +58,8 @@ pub struct Router {
     pub(crate) upload: Receiver<Event>,
     pub(crate) download: Arc<Sender<Frame>>,
 
-    switch: Arc<SwitchState>,
-    tree: Arc<TreeState>,
+    switch: SwitchState,
+    tree: TreeState,
 }
 impl Router {
     pub fn new(key: VerificationKey, download: Sender<Frame>, upload: Receiver<Event>) -> Self {
@@ -61,20 +67,20 @@ impl Router {
             peer_handles: Default::default(),
             upload,
             download: Arc::new(download),
-            switch: Arc::new(SwitchState {
+            switch: SwitchState {
                 public_key: key,
                 sockets: Default::default(),
-                ports: Default::default()
-            }),
-            tree: Arc::new(TreeState {
-                parent: RwLock::new(key),
+                ports: Default::default(),
+            },
+            tree: TreeState {
+                parent: Arc::new(RwLock::new(key)),
                 announcements: Default::default(),
-                sequence: RwLock::new(0),
-                ordering: RwLock::new(0)
-            })
+                sequence: Arc::new(RwLock::new(0)),
+                ordering: Arc::new(RwLock::new(0)),
+            },
         }
     }
-    pub fn spawn(mut self) -> JoinHandle<Self>{
+    pub fn spawn(mut self) -> JoinHandle<Self> {
         tokio::spawn(async move {
             loop {
                 if let Some(event) = self.upload.recv().await {
@@ -83,7 +89,7 @@ impl Router {
                             self.add_peer(key, socket).await;
                         }
                         Event::HandleFrame(frame) => {
-                            Self::handle_frame(frame);
+                            Self::handle_frame(frame, self.switch.clone(), self.tree.clone());
                         }
                         Event::RemovePeer(_) => {}
                         Event::SendFrameToPeer { frame, to: peer } => {
@@ -125,37 +131,39 @@ impl Router {
     }
     async fn spawn_peer(&self, peer: VerificationKey) {
         let switch = self.switch.clone();
-        self.peer_handles.lock().await.push(tokio::spawn(async move {
-            loop {
-                let sockets = switch.sockets.read().await;
-                if let Some(socket) = sockets.get(&peer) {
-                    let mut socket = socket.lock().await;
-                    if let Some(result) = socket.next().await {
-                        match result {
-                            Ok(frame) => {
-                                trace!("Decoded {:?}", frame);
-                                Self::handle_frame(frame);
+        let tree = self.tree.clone();
+        self.peer_handles
+            .lock()
+            .await
+            .push(tokio::spawn(async move {
+                loop {
+                    let sockets = switch.sockets.read().await;
+                    if let Some(socket) = sockets.get(&peer) {
+                        let mut socket = socket.lock().await;
+                        if let Some(result) = socket.next().await {
+                            match result {
+                                Ok(frame) => {
+                                    trace!("Decoded {:?}", frame);
+                                    Self::handle_frame(frame, switch.clone(), tree.clone());
+                                }
+                                Err(e) => {
+                                    debug!("Could not decode {:?}", e);
+                                }
                             }
-                            Err(e) => {
-                                debug!("Could not decode {:?}", e);
-                            }
+                        } else {
+                            // debug!("Stream of {:?} ended. Stopping peer", peer);
+                            // break
                         }
                     } else {
-                        // debug!("Stream of {:?} ended. Stopping peer", peer);
-                        // break
+                        debug!("No stream for {:?}. Stopping peer", peer);
+                        break;
                     }
-                } else {
-                    debug!("No stream for {:?}. Stopping peer", peer);
-                    break
                 }
-            }
-        }));
+            }));
     }
     async fn socket_of_peer() {}
     async fn send_to_socket(socket: &mut Framed<TcpStream, PineconeCodec>, frame: Frame) {
         socket.send(frame).await.unwrap();
     }
-    fn handle_frame(frame: Frame) {
-
-    }
+    fn handle_frame(frame: Frame, switch: SwitchState, tree: TreeState) {}
 }

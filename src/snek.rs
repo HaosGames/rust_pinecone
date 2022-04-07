@@ -1,7 +1,7 @@
-use std::time::SystemTime;
 use crate::frames::{SnekBootstrap, SnekPacket, SnekSetup};
-use crate::router::{Port, SNEK_EXPIRY_PERIOD, SnekPathId, VerificationKey};
+use crate::router::{Port, SnekPathId, VerificationKey, SNEK_EXPIRY_PERIOD};
 use crate::tree::Root;
+use std::time::SystemTime;
 
 #[derive(PartialEq, Eq, Clone, Debug, PartialOrd, Ord, Hash)]
 pub(crate) struct SnekPathIndex {

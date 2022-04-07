@@ -1,12 +1,15 @@
-use std::io::{ErrorKind, Read};
-use std::time::SystemTime;
-use bytes::{Buf, BufMut, BytesMut};
-use log::{debug, trace};
-use tokio_util::codec::{Decoder, Encoder};
 use crate::coordinates::Coordinates;
-use crate::frames::{Frame, SnekBootstrap, SnekBootstrapAck, SnekPacket, SnekSetup, SnekSetupAck, SnekTeardown, TreeAnnouncement, TreePacket};
+use crate::frames::{
+    Frame, SnekBootstrap, SnekBootstrapAck, SnekPacket, SnekSetup, SnekSetupAck, SnekTeardown,
+    TreeAnnouncement, TreePacket,
+};
 use crate::router::VerificationKey;
 use crate::tree::{Root, RootAnnouncementSignature};
+use bytes::{Buf, BufMut, BytesMut};
+use log::{debug, trace};
+use std::io::{ErrorKind, Read};
+use std::time::SystemTime;
+use tokio_util::codec::{Decoder, Encoder};
 
 /// MaxFrameSize is the maximum size that a single frame can be, including
 /// all headers.
@@ -180,7 +183,7 @@ impl Encoder<Frame> for PineconeCodec {
     }
 }
 fn decode_key(src: &mut BytesMut) -> VerificationKey {
-    let mut key: VerificationKey = [0;32];
+    let mut key: VerificationKey = [0; 32];
     for i in 0..32 {
         key[i] = src.get_u8();
     }
@@ -198,14 +201,20 @@ impl Decoder for PineconeCodec {
             return Ok(None);
         }
         if !src.starts_with(FRAME_MAGIC_BYTES.as_slice()) {
-            return Err(Self::Error::new(ErrorKind::InvalidData, "Magic Bytes not found"));
+            return Err(Self::Error::new(
+                ErrorKind::InvalidData,
+                "Magic Bytes not found",
+            ));
         }
         if src.len() < 10 {
             return Ok(None);
         }
         src.get_u32(); // Discard Magic Bytes
         if src.get_u8() != 0 {
-            return Err(Self::Error::new(ErrorKind::Unsupported, "Not frame version 0"));
+            return Err(Self::Error::new(
+                ErrorKind::Unsupported,
+                "Not frame version 0",
+            ));
         }
         let frame_type = src.get_u8();
         let extra1 = src.get_u8();
