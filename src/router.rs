@@ -173,6 +173,7 @@ impl Router {
                     if let Some(socket) = sockets.get(&peer) {
                         let mut socket = socket.lock().await;
                         if let Some(result) = socket.next().await {
+                            drop(socket);
                             match result {
                                 Ok(frame) => {
                                     trace!("Decoded {:?}", frame);
