@@ -48,7 +48,7 @@ async fn main() {
                 })
                 .await
                 .unwrap();
-            let announcement = Frame::TreeAnnouncement(TreeAnnouncement {
+            /*let announcement = Frame::TreeAnnouncement(TreeAnnouncement {
                 root: Root {
                     public_key: public_key0,
                     sequence_number: 0,
@@ -66,7 +66,7 @@ async fn main() {
                     to: public_key1,
                 })
                 .await
-                .unwrap();
+                .unwrap();*/
             let router = handle.await.unwrap();
         }
         "1" => {
@@ -85,7 +85,7 @@ async fn main() {
                 })
                 .await
                 .unwrap();
-            let announcement = Frame::TreeAnnouncement(TreeAnnouncement {
+            /*let announcement = Frame::TreeAnnouncement(TreeAnnouncement {
                 root: Root {
                     public_key: public_key1,
                     sequence_number: 0,
@@ -103,7 +103,7 @@ async fn main() {
                     to: public_key0,
                 })
                 .await
-                .unwrap();
+                .unwrap();*/
             let router = handle.await.unwrap();
         }
         _ => {}
