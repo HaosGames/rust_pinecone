@@ -185,8 +185,8 @@ impl Router {
                                 }
                             }
                         } else {
-                            debug!("Stream of {:?} ended.", peer);
-                            // break
+                            debug!("Stream of {:?} ended. Stopping peer", peer);
+                            break;
                         }
                     } else {
                         debug!("No stream for {:?}. Stopping peer", peer);
