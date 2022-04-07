@@ -7,6 +7,7 @@ use std::io::Error;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use rand::{Rng, thread_rng};
+use tokio::join;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
@@ -123,23 +124,23 @@ impl Router {
                             }
                         }
                         Event::StopRouter => {
-                            self.stop_router().await;
                             break;
                         }
                     }
                 } else {
-                    debug!("Local event channel closed. Stopping router");
-                    self.stop_router().await;
+                    debug!("Local event channel closed.");
                     break;
                 }
             }
+            trace!("Stopping router");
+            self.stop_router().await;
             self
         })
     }
     async fn stop_router(&self) {
         let mut handles = self.peer_handles.lock().await;
         for handle in handles.pop() {
-            handle.await;
+            handle.await.unwrap();
         }
     }
     async fn add_peer(&self, peer: VerificationKey, socket: Framed<TcpStream, PineconeCodec>) {
@@ -167,6 +168,7 @@ impl Router {
             .await
             .push(tokio::spawn(async move {
                 loop {
+                    trace!("Waiting for next frame");
                     let sockets = switch.sockets.read().await;
                     if let Some(socket) = sockets.get(&peer) {
                         let mut socket = socket.lock().await;
@@ -175,13 +177,14 @@ impl Router {
                                 Ok(frame) => {
                                     trace!("Decoded {:?}", frame);
                                     Self::handle_frame(frame, peer, &switch, &tree, &snek).await;
+                                    continue;
                                 }
                                 Err(e) => {
                                     debug!("Could not decode {:?}", e);
                                 }
                             }
                         } else {
-                            // debug!("Stream of {:?} ended. Stopping peer", peer);
+                            debug!("Stream of {:?} ended.", peer);
                             // break
                         }
                     } else {
@@ -536,7 +539,8 @@ impl Router {
                 // AcceptNewParent
                 trace!("Announcement has stronger root. Forwarding to peers");
                 Self::set_parent(from.clone(), tree).await;
-                Self::send_tree_announcements_to_all(Self::current_announcement(switch, tree).await, switch).await;
+                let announcement = Self::current_announcement(switch, tree).await;
+                Self::send_tree_announcements_to_all(announcement, switch).await;
                 return;
             }
             if frame.root.public_key < Self::current_announcement(switch, tree).await.root.public_key {
