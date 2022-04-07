@@ -149,6 +149,7 @@ impl Router {
             return;
         }
         sockets.insert(peer, Mutex::new(socket));
+        drop(sockets);
         info!("Added peer {:?}", peer);
 
         let port = Self::get_new_port(&self.switch).await;
@@ -189,9 +190,6 @@ impl Router {
                     }
                 }
             }));
-    }
-    async fn send_to_socket(socket: &mut Framed<TcpStream, PineconeCodec>, frame: Frame) {
-        socket.send(frame).await.unwrap();
     }
 
     async fn get_new_port(switch: &SwitchState) -> Port {
@@ -341,8 +339,11 @@ impl Router {
         let sockets = switch.sockets.read().await;
         let socket = sockets.get(&to);
         if let Some(socket) = socket {
+            trace!("Sending {:?}", frame);
             let mut socket = socket.lock().await;
-            Self::send_to_socket(&mut *socket, frame).await;
+            socket.send(frame).await.unwrap();
+        } else {
+            debug!("No Socket for {:?}", to);
         }
     }
 
@@ -580,8 +581,8 @@ impl Router {
         let port = Self::port(to, switch).await.unwrap();
         let signed_announcement = announcement.append_signature(switch.public_key, port);
         debug!(
-            "Sending tree announcement to port {}: {}",
-            port, signed_announcement
+            "Sending tree announcement to port {}",
+            port
         );
         Self::send(Frame::TreeAnnouncement(signed_announcement), to, switch).await;
     }
