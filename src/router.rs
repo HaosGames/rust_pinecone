@@ -166,34 +166,46 @@ impl Router {
         self.peer_handles
             .lock()
             .await
-            .push(tokio::spawn(async move {
+            .push(
+                tokio::spawn(async move {
                 loop {
-                    trace!("Waiting for next frame");
-                    let sockets = switch.sockets.read().await;
-                    if let Some(socket) = sockets.get(&peer) {
-                        let mut socket = socket.lock().await;
-                        if let Some(result) = socket.next().await {
-                            drop(socket);
-                            match result {
-                                Ok(frame) => {
-                                    trace!("Decoded {:?}", frame);
-                                    Self::handle_frame(frame, peer, &switch, &tree, &snek).await;
-                                    continue;
-                                }
-                                Err(e) => {
-                                    debug!("Could not decode {:?}", e);
-                                }
-                            }
-                        } else {
-                            debug!("Stream of {:?} ended. Stopping peer", peer);
-                            break;
+                    match Self::poll_peer(peer, &switch, &tree, &snek).await {
+                        Ok(_) => {
+                            continue
                         }
-                    } else {
-                        debug!("No stream for {:?}. Stopping peer", peer);
-                        break;
+                        Err(_) => {
+                            break
+                        }
                     }
                 }
             }));
+    }
+    async fn poll_peer(peer: VerificationKey, switch: &SwitchState, tree: &TreeState, snek: &SnekState) -> Result<(), ()> {
+        trace!("Waiting for next frame");
+        let sockets = switch.sockets.read().await;
+        if let Some(socket) = sockets.get(&peer) {
+            let mut socket = socket.lock().await;
+            if let Some(result) = socket.next().await {
+                drop(socket);
+                match result {
+                    Ok(frame) => {
+                        trace!("Decoded {:?}", frame);
+                        Self::handle_frame(frame, peer, &switch, &tree, &snek).await;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        debug!("Could not decode {:?}", e);
+                        return Ok(());
+                    }
+                }
+            } else {
+                debug!("Stream of {:?} ended. Stopping peer", peer);
+                return Err(());
+            }
+        } else {
+            debug!("No stream for {:?}. Stopping peer", peer);
+            return Err(());
+        }
     }
 
     async fn get_new_port(switch: &SwitchState) -> Port {
