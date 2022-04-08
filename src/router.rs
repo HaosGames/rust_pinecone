@@ -19,6 +19,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::error::Elapsed;
 use tokio::{join, time};
+use tokio::time::{interval, sleep};
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
 
@@ -63,6 +64,7 @@ struct TreeState {
     ordering: Arc<RwLock<SequenceNumber>>,
     announcement_timer: Arc<RwLock<WaitTimer>>,
     reparent_timer: Arc<RwLock<Option<WaitTimer>>>,
+    reparent_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 #[derive(Clone)]
 struct SnekState {
@@ -98,6 +100,7 @@ impl Router {
                 ordering: Arc::new(RwLock::new(0)),
                 announcement_timer: Arc::new(RwLock::new(WaitTimer::new(ANNOUNCEMENT_INTERVAL))),
                 reparent_timer: Arc::new(RwLock::new(None)),
+                reparent_handle: Arc::new(Mutex::new(None)),
             },
             snek: SnekState {
                 ascending_path: Arc::new(RwLock::new(None)),
@@ -569,8 +572,8 @@ impl Router {
             if frame.is_loop_of_child(&Self::public_key(switch)) {
                 // SelectNewParentWithWait
                 debug!("Announcement contains loop");
-                Self::set_reparent_timer(tree).await;
                 Self::become_root(switch, tree).await;
+                Self::reparent(true, switch, tree, snek).await;
                 return;
             }
             if frame.root.public_key
@@ -581,8 +584,8 @@ impl Router {
             {
                 // SelectNewParentWithWait
                 debug!("Announcement has weaker root");
-                Self::set_reparent_timer(tree).await;
                 Self::become_root(switch, tree).await;
+                Self::reparent(true, switch, tree, snek).await;
                 return;
             }
             if frame.root.public_key
@@ -623,8 +626,8 @@ impl Router {
                 }
                 // SelectNewParentWithWait
                 debug!("Announcement replayed current sequence");
-                Self::set_reparent_timer(tree).await;
                 Self::become_root(switch, tree).await;
+                Self::reparent(true, switch, tree, snek).await;
                 return;
             }
         } else {
@@ -780,12 +783,19 @@ impl Router {
         Self::set_parent(Self::public_key(switch).clone(), tree).await;
     }
     async fn reparent(wait: bool, switch: &SwitchState, tree: &TreeState, snek: &SnekState) {
-        if Self::reparent_timer_expired(tree).await || !wait {
-            trace!("Re-parenting");
-            if Self::parent_selection(switch, tree).await {
-                Self::bootstrap_now(switch, tree, snek).await;
+        let switch = switch.clone();
+        let tree = tree.clone();
+        let snek = snek.clone();
+        tokio::spawn(async move {
+            if wait {
+                trace!("Waiting to reparent");
+                sleep(REPARENT_WAIT_TIME).await;
             }
-        }
+            trace!("Re-parenting");
+            if Self::parent_selection(&switch, &tree).await {
+                Self::bootstrap_now(&switch, &tree, &snek).await;
+            }
+        });
     }
     async fn current_root(switch: &SwitchState, tree: &TreeState) -> Root {
         Self::current_announcement(switch, tree).await.root
