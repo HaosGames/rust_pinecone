@@ -1119,7 +1119,7 @@ impl Router {
             // so either another node has forwarded it to us incorrectly, or
             // a routing loop has occurred somewhere. Don't act on the bootstrap
             // in that case.
-        } else if ack.root == Self::current_root(switch, tree).await {
+        } else if ack.root != Self::current_root(switch, tree).await {
             // The root key in the bootstrap ACK doesn't match our own key, or the
             // sequence doesn't match, so it is quite possible that routing setup packets
             // using tree routing would fail.
