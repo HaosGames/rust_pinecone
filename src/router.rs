@@ -327,6 +327,9 @@ impl Router {
             .insert(of.clone(), announcement);
     }
     async fn port(of: VerificationKey, switch: &SwitchState) -> Option<Port> {
+        if  Self::public_key(switch) == of {
+            return Some(0);
+        }
         let ports = switch.ports.read().await;
         ports.get(&of).cloned()
     }
