@@ -970,8 +970,13 @@ impl Router {
         // parent or ascending paths.
         if Self::parent(tree).await != Self::public_key(switch) {
             if bootstrap && best_key == destination_key {
-                // Bootstraps always start working towards thear root so that they
+                // Bootstraps always start working towards their root so that they
                 // go somewhere rather than getting stuck.
+                best_key = Self::current_announcement(switch, tree)
+                    .await
+                    .root
+                    .public_key;
+                best_peer = Some(Self::parent(tree).await)
             }
             if Self::dht_ordered(
                 &best_key,
