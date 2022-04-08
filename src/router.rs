@@ -505,7 +505,7 @@ impl Router {
                     continue; // ignore peers that are following a different root or seq
                 }
 
-                let peer_coordinates: Coordinates = announcement.clone().into();
+                let peer_coordinates: Coordinates = announcement.peer_coords();
                 let distance_to_peer =
                     peer_coordinates.distance_to(&frame.destination_coordinates());
                 if Self::is_better_next_tree_hop_candidate(
@@ -695,7 +695,7 @@ impl Router {
         }
     }
     async fn coordinates(switch: &SwitchState, tree: &TreeState) -> Coordinates {
-        Self::current_announcement(switch, tree).await.into()
+        Self::current_announcement(switch, tree).await.coords()
     }
     async fn send_tree_announcements_to_all(announcement: TreeAnnouncement, switch: &SwitchState) {
         trace!("Sending tree announcements to all peers");
@@ -938,8 +938,9 @@ impl Router {
         if let Some(peer) = Self::next_snek_hop(&frame, true, false, switch, tree, snek).await {
             trace!("Bootstrapping path {} ", frame.path_id);
             Self::send(Frame::SnekBootstrap(frame), peer, switch).await;
+        } else {
+            trace!("Not bootstrapping because no next hop was found");
         }
-        trace!("Not bootstrapping because no next hop was found");
     }
 
     async fn next_snek_hop(
@@ -1074,6 +1075,7 @@ impl Router {
         // current root, otherwise we won't be able to route back to them using
         // tree routing anyway. If they don't match, silently drop the bootstrap.
         if Self::current_root(switch, tree).await == frame.root {
+            trace!("Handling Bootstrap...");
             // In response to a bootstrap, we'll send back a bootstrap ACK packet to
             // the sender. We'll include our own root details in the ACK.
             let frame = SnekBootstrapAck {
@@ -1091,7 +1093,11 @@ impl Router {
                 Self::next_tree_hop(&frame, Self::public_key(switch), switch, tree).await
             {
                 Self::send(Frame::SnekBootstrapACK(frame), peer, switch).await;
+            } else {
+                debug!("No next tree hop for BootstrapAck");
             }
+        } else {
+            trace!("Bootstrap doesn't have same root. Dropping");
         }
     }
 

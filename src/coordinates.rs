@@ -38,21 +38,18 @@ impl Default for Coordinates {
         }
     }
 }
-
-impl From<TreeAnnouncement> for Coordinates {
-    fn from(announcement: TreeAnnouncement) -> Self {
+impl TreeAnnouncement {
+    pub(crate) fn coords(&self) -> Coordinates {
         let mut coordinates = Coordinates::default();
-        for signature in announcement.signatures {
+        for signature in &self.signatures {
             coordinates.coordinates.push(signature.destination_port);
         }
         coordinates
     }
-}
-impl From<&TreeAnnouncement> for Coordinates {
-    fn from(announcement: &TreeAnnouncement) -> Self {
+    pub(crate) fn peer_coords(&self) -> Coordinates {
         let mut coordinates = Coordinates::default();
-        for signature in &announcement.signatures {
-            coordinates.coordinates.push(signature.destination_port);
+        for i in 0..self.signatures.len()-1 {
+            coordinates.coordinates.push(self.signatures.get(i).unwrap().destination_port);
         }
         coordinates
     }
