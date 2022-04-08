@@ -13,11 +13,12 @@ use std::collections::HashMap;
 use std::io::Error;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::join;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
+use tokio::time::error::Elapsed;
+use tokio::{join, time};
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
 
@@ -195,31 +196,44 @@ impl Router {
         tree: &TreeState,
         snek: &SnekState,
     ) -> Result<(), ()> {
-        trace!("Waiting for next frame");
         let sockets = switch.sockets.read().await;
         if let Some(socket) = sockets.get(&peer) {
-            let mut socket = socket.lock().await;
-            if let Some(result) = socket.next().await {
-                drop(socket);
-                match result {
-                    Ok(frame) => {
-                        trace!("Decoded {:?}", frame);
-                        Self::handle_frame(frame, peer, &switch, &tree, &snek).await;
-                        return Ok(());
+            if let Ok(result) = Self::poll_socket(socket).await {
+                if let Some(decode_result) = result {
+                    match decode_result {
+                        Ok(frame) => {
+                            trace!("Decoded {:?}", frame);
+                            Self::handle_frame(frame, peer, &switch, &tree, &snek).await;
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            debug!("Could not decode {:?}", e);
+                            return Ok(());
+                        }
                     }
-                    Err(e) => {
-                        debug!("Could not decode {:?}", e);
-                        return Ok(());
-                    }
+                } else {
+                    debug!("Stream of {:?} ended. Stopping peer", peer);
+                    return Err(());
                 }
             } else {
-                debug!("Stream of {:?} ended. Stopping peer", peer);
-                return Err(());
+                // Socket poll timeout exceeded
+                return Ok(());
             }
         } else {
             debug!("No stream for {:?}. Stopping peer", peer);
             return Err(());
         }
+    }
+    async fn poll_socket(
+        socket: &Mutex<Framed<TcpStream, PineconeCodec>>,
+    ) -> Result<Option<Result<Frame, std::io::Error>>, Elapsed> {
+        let mut socket = socket.lock().await;
+        let result = time::timeout(
+            Duration::from_millis(10),
+            async move { socket.next().await },
+        )
+        .await;
+        result
     }
 
     async fn get_new_port(switch: &SwitchState) -> Port {
