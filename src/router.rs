@@ -1395,6 +1395,9 @@ impl Router {
             Self::send_teardown_for_rejected_path(rx.source_key, rx.path_id, from, switch, tree)
                 .await;
             return;
+        } else {
+            trace!("Forwarding SnekSetup.");
+            Self::send(Frame::SnekSetup(rx.clone()), next_peer, switch).await;
         }
         // Add a new routing table entry as we are intermediate to
         // the path.
