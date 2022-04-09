@@ -205,7 +205,7 @@ impl Router {
                 if let Some(decode_result) = result {
                     match decode_result {
                         Ok(frame) => {
-                            trace!("Decoded {:?}", frame);
+                            trace!("Received {:?}", frame);
                             Self::handle_frame(frame, peer, &switch, &tree, &snek).await;
                             return Ok(());
                         }
@@ -418,10 +418,8 @@ impl Router {
         tree: &TreeState,
         snek: &SnekState,
     ) {
-        trace!("Handling Frame...");
         match frame {
             Frame::TreeRouted(packet) => {
-                trace!("Frame is TreeRouted");
                 if let Some(peer) = Self::next_tree_hop(&packet, from, switch, tree).await {
                     let peer = peer;
                     if peer == Self::public_key(switch) {
@@ -434,7 +432,6 @@ impl Router {
                 return;
             }
             Frame::SnekRouted(packet) => {
-                trace!("Frame is SnekRouted");
                 if let Some(peer) =
                     Self::next_snek_hop(&packet, false, true, switch, tree, snek).await
                 {
@@ -449,7 +446,6 @@ impl Router {
                 return;
             }
             Frame::TreeAnnouncement(announcement) => {
-                trace!("Frame is TreeAnnouncement");
                 Self::handle_tree_announcement(announcement, from, switch, tree, snek).await;
             }
 
@@ -1078,7 +1074,6 @@ impl Router {
         // current root, otherwise we won't be able to route back to them using
         // tree routing anyway. If they don't match, silently drop the bootstrap.
         if Self::current_root(switch, tree).await == frame.root {
-            trace!("Handling Bootstrap...");
             // In response to a bootstrap, we'll send back a bootstrap ACK packet to
             // the sender. We'll include our own root details in the ACK.
             let frame = SnekBootstrapAck {
@@ -1122,10 +1117,12 @@ impl Router {
             // so either another node has forwarded it to us incorrectly, or
             // a routing loop has occurred somewhere. Don't act on the bootstrap
             // in that case.
+            trace!("Received own bootstrap ack. Dropping");
         } else if ack.root != Self::current_root(switch, tree).await {
             // The root key in the bootstrap ACK doesn't match our own key, or the
             // sequence doesn't match, so it is quite possible that routing setup packets
             // using tree routing would fail.
+            trace!("Bootstrap-ack doesn't have same root. Dropping");
         } else if let Some(asc) = &*ascending_path {
             if let Some(ascending) = paths.get(&asc) {
                 if ascending.valid() {
@@ -1134,6 +1131,7 @@ impl Router {
                         // We've received another bootstrap ACK from our direct ascending node.
                         // Just refresh the record and then send a new path setup message to
                         // that node.
+                        trace!("Received updated bootstrap-ack from current ascending node. Sending new path setup.");
                         update = true
                     } else if Self::dht_ordered(
                         &Self::public_key(switch),
@@ -1144,6 +1142,7 @@ impl Router {
                         // new node that we've received a bootstrap from is actually closer to
                         // us than the previous node. We'll update our record to use the new
                         // node instead and then send a new path setup message to it.
+                        trace!("Received bootstrap-ack from closer node. Updating ascending path and sending new path setup.");
                         update = true;
                     }
                 } else {
@@ -1152,6 +1151,7 @@ impl Router {
                         // We don't know about an ascending node and at the moment we don't know
                         // any better candidates, so we'll accept a bootstrap ACK from a node with a
                         // key higher than ours (so that it matches descending order).
+                        trace!("Current ascending path expired. Accepting bootstrap-ack from valid peer.");
                         update = true;
                     }
                 }
@@ -1162,12 +1162,14 @@ impl Router {
                 // We don't know about an ascending node and at the moment we don't know
                 // any better candidates, so we'll accept a bootstrap ACK from a node with a
                 // key higher than ours (so that it matches descending order).
+                trace!("Accepting bootstrap-ack from valid peer.");
                 update = true;
             }
         } else {
             // The bootstrap ACK conditions weren't met. This might just be because
             // there's a node out there that hasn't converged to a closer node
             // yet, so we'll just ignore the acknowledgement.
+            trace!("Dropping non-valid bootstrap-ack.");
         }
         if !update {
             return;
@@ -1192,11 +1194,13 @@ impl Router {
         match next_hop {
             None => {
                 // No peer was identified, which shouldn't happen.
+                debug!("No next tree hop for SnekSetup");
                 return;
             }
             Some(next_peer) => {
                 if Self::public_key(switch) == next_peer {
                     // The peer is local, which shouldn't happen.
+                    debug!("Next hop for SnekSetup is self. Dropping.");
                     return;
                 }
                 Self::send(Frame::SnekSetup(setup), next_peer, switch).await;
@@ -1234,6 +1238,7 @@ impl Router {
                     }
                 }
                 // Install the new route into the DHT.
+                trace!("Adding route {:?} to DHT", index);
                 paths.insert(index, entry.clone());
                 *snek.candidate.write().await = Some(entry);
             }
@@ -1254,6 +1259,7 @@ impl Router {
         let mut descending_path = snek.ascending_path.write().await;
         let mut paths = snek.paths.write().await;
         if Self::current_root(switch, tree).await != rx.root {
+            trace!("SnekSetup has different root. Responding with Teardown");
             Self::send_teardown_for_rejected_path(rx.source_key, rx.path_id, from, switch, tree)
                 .await;
         }
@@ -1267,6 +1273,7 @@ impl Router {
         // problem. This will probably trigger a new setup, but that's OK, it should
         // have a new path ID.
         if paths.contains_key(&index) {
+            trace!("Trigger new SnekSetup because of already existing path.");
             Self::send_teardown_for_existing_path(0, rx.source_key, rx.path_id, switch, tree, snek)
                 .await;
             Self::send_teardown_for_rejected_path(rx.source_key, rx.path_id, from, switch, tree)
