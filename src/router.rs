@@ -34,7 +34,7 @@ pub(crate) const SNEK_EXPIRY_PERIOD: Duration = Duration::from_secs(60 * 60);
 pub(crate) const ANNOUNCEMENT_TIMEOUT: Duration = Duration::from_secs(45 * 60); //45 min
 pub(crate) const ANNOUNCEMENT_INTERVAL: Duration = Duration::from_secs(30 * 60); // 30 min
 pub(crate) const REPARENT_WAIT_TIME: Duration = Duration::from_secs(1); //   1 sec
-pub(crate) const MAINTAIN_SNEK_INTERVALL: Duration = Duration::from_secs(1);
+pub(crate) const MAINTAIN_SNEK_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct Router {
@@ -102,7 +102,7 @@ impl Router {
 
         let router = self.clone();
         tokio::spawn(async move {
-            let mut ticker = interval_at(Instant::now().add(MAINTAIN_SNEK_INTERVALL), MAINTAIN_SNEK_INTERVALL);
+            let mut ticker = interval_at(Instant::now().add(MAINTAIN_SNEK_INTERVAL), MAINTAIN_SNEK_INTERVAL);
             loop {
                 ticker.tick().await;
                 let running = router.running.read().await;
