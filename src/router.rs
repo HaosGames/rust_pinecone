@@ -1284,11 +1284,11 @@ impl Router {
         // with information from the bootstrap.
         if rx.destination_key == Self::public_key(switch) {
             let mut update = false;
-            if Self::current_root(switch, tree).await == rx.root {
+            if Self::current_root(switch, tree).await != rx.root {
                 // The root key in the bootstrap ACK doesn't match our own key, or the
                 // sequence doesn't match, so it is quite possible that routing setup packets
                 // using tree routing would fail.
-            } else if rx.source_key < Self::public_key(switch) {
+            } else if !(rx.source_key < Self::public_key(switch)) {
                 // The bootstrapping key should be less than ours but it isn't.
             } else if let Some(desc) = &*descending_path {
                 let descending = paths.get(desc).unwrap();
