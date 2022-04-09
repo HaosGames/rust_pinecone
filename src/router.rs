@@ -1291,8 +1291,10 @@ impl Router {
                 // The root key in the bootstrap ACK doesn't match our own key, or the
                 // sequence doesn't match, so it is quite possible that routing setup packets
                 // using tree routing would fail.
+                trace!("SnekSetup has different root. Dropping.");
             } else if !(rx.source_key < Self::public_key(switch)) {
                 // The bootstrapping key should be less than ours but it isn't.
+                trace!("Key of bootstrapping node is not less then self. Dropping.");
             } else if let Some(desc) = &*descending_path {
                 let descending = paths.get(desc).unwrap();
                 if descending.valid() {
@@ -1309,12 +1311,12 @@ impl Router {
                         // The bootstrapping node is closer to us than our previous descending
                         // node was.
                         update = true;
-                    } else {
-                        // Our descending entry has expired
-                        if rx.source_key < Self::public_key(switch) {
-                            // The bootstrapping key is less than ours so we'll acknowledge it.
-                            update = true;
-                        }
+                    }
+                } else {
+                    // Our descending entry has expired
+                    if rx.source_key < Self::public_key(switch) {
+                        // The bootstrapping key is less than ours so we'll acknowledge it.
+                        update = true;
                     }
                 }
             } else if let None = *descending_path {
