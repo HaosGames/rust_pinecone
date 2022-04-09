@@ -453,7 +453,14 @@ impl Router {
             }
 
             Frame::SnekBootstrap(bootstrap) => {
-                Self::handle_snek_bootstrap(bootstrap, switch, tree).await;
+                let next_hop =
+                    Self::next_snek_hop(&bootstrap, true, false, switch, tree, snek).await.unwrap();
+                if next_hop == Self::public_key(switch) {
+                    Self::handle_snek_bootstrap(bootstrap, switch, tree).await;
+                } else {
+                    trace!("Forwarding SnekBootstrap.");
+                    Self::send(Frame::SnekBootstrap(bootstrap), next_hop, switch).await;
+                }
             }
             Frame::SnekBootstrapACK(ack) => {
                 Self::handle_snek_bootstrap_ack(ack, switch, tree, snek).await;
@@ -1093,6 +1100,7 @@ impl Router {
             if let Some(peer) =
                 Self::next_tree_hop(&frame, Self::public_key(switch), switch, tree).await
             {
+                trace!("Responding to SnekBootstrap with Ack.");
                 Self::send(Frame::SnekBootstrapACK(frame), peer, switch).await;
             } else {
                 debug!("No next tree hop for BootstrapAck");
