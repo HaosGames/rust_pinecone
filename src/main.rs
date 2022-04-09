@@ -48,25 +48,6 @@ async fn main() {
                 })
                 .await
                 .unwrap();
-            /*let announcement = Frame::TreeAnnouncement(TreeAnnouncement {
-                root: Root {
-                    public_key: public_key0,
-                    sequence_number: 0,
-                },
-                signatures: vec![RootAnnouncementSignature {
-                    signing_public_key: public_key0,
-                    destination_port: 1,
-                }],
-                receive_time: SystemTime::now(),
-                receive_order: 0,
-            });
-            upload_sender
-                .send(Event::SendFrameToPeer {
-                    frame: announcement,
-                    to: public_key1,
-                })
-                .await
-                .unwrap();*/
             let router = handle.await.unwrap();
         }
         "1" => {
@@ -85,25 +66,6 @@ async fn main() {
                 })
                 .await
                 .unwrap();
-            /*let announcement = Frame::TreeAnnouncement(TreeAnnouncement {
-                root: Root {
-                    public_key: public_key1,
-                    sequence_number: 0,
-                },
-                signatures: vec![RootAnnouncementSignature {
-                    signing_public_key: public_key1,
-                    destination_port: 1,
-                }],
-                receive_time: SystemTime::now(),
-                receive_order: 0,
-            });
-            upload_sender
-                .send(Event::SendFrameToPeer {
-                    frame: announcement,
-                    to: public_key0,
-                })
-                .await
-                .unwrap();*/
             let router = handle.await.unwrap();
         }
         _ => {}

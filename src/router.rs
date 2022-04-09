@@ -74,8 +74,6 @@ struct SnekState {
     candidate: Arc<RwLock<Option<SnekPath>>>,
 }
 pub struct Router {
-    peer_handles: Mutex<Vec<JoinHandle<()>>>,
-
     pub(crate) upload: Receiver<Event>,
 
     switch: SwitchState,
@@ -85,7 +83,6 @@ pub struct Router {
 impl Router {
     pub fn new(key: VerificationKey, download: Sender<Frame>, upload: Receiver<Event>) -> Self {
         Self {
-            peer_handles: Default::default(),
             upload,
             switch: SwitchState {
                 public_key: key,
@@ -151,10 +148,7 @@ impl Router {
         })
     }
     async fn stop_router(&self) {
-        let mut handles = self.peer_handles.lock().await;
-        for handle in handles.pop() {
-            handle.await.unwrap();
-        }
+
     }
     async fn add_peer(&self, peer: VerificationKey, socket: Framed<TcpStream, PineconeCodec>) {
         let mut sockets = self.switch.sockets.write().await;
@@ -181,17 +175,14 @@ impl Router {
         let switch = self.switch.clone();
         let tree = self.tree.clone();
         let snek = self.snek.clone();
-        self.peer_handles
-            .lock()
-            .await
-            .push(tokio::spawn(async move {
-                loop {
-                    match Self::poll_peer(peer, &switch, &tree, &snek).await {
-                        Ok(_) => continue,
-                        Err(_) => break,
-                    }
+        tokio::spawn(async move {
+            loop {
+                match Self::poll_peer(peer, &switch, &tree, &snek).await {
+                    Ok(_) => continue,
+                    Err(_) => break,
                 }
-            }));
+            }
+        });
     }
     async fn poll_peer(
         peer: VerificationKey,
