@@ -18,8 +18,8 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::error::Elapsed;
-use tokio::{join, time};
 use tokio::time::{interval, sleep};
+use tokio::{join, time};
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
 
@@ -34,124 +34,80 @@ pub(crate) const ANNOUNCEMENT_TIMEOUT: Duration = Duration::from_secs(45 * 60); 
 pub(crate) const ANNOUNCEMENT_INTERVAL: Duration = Duration::from_secs(30 * 60); // 30 min
 pub(crate) const REPARENT_WAIT_TIME: Duration = Duration::from_secs(1); //   1 sec
 
-#[derive(Debug)]
-pub enum Event {
-    AddPeer {
-        key: VerificationKey,
-        socket: Framed<TcpStream, PineconeCodec>,
-    },
-    HandleFrame(Frame),
-    SendFrameToPeer {
-        frame: Frame,
-        to: VerificationKey,
-    },
-    RemovePeer(VerificationKey),
-    StopRouter,
-}
 #[derive(Clone)]
-struct SwitchState {
-    pub(crate) public_key: VerificationKey,
+pub struct Router {
+    public_key: Arc<VerificationKey>,
+    running: Arc<RwLock<bool>>,
+
+    pub(crate) upload: Arc<Mutex<Receiver<Frame>>>,
     pub(crate) download: Arc<Sender<Frame>>,
     pub(crate) sockets:
         Arc<RwLock<HashMap<VerificationKey, Mutex<Framed<TcpStream, PineconeCodec>>>>>,
     ports: Arc<RwLock<HashMap<VerificationKey, Port>>>,
-}
-#[derive(Clone)]
-struct TreeState {
+
     parent: Arc<RwLock<VerificationKey>>,
     announcements: Arc<RwLock<HashMap<VerificationKey, TreeAnnouncement>>>,
     sequence: Arc<RwLock<SequenceNumber>>,
     ordering: Arc<RwLock<SequenceNumber>>,
     announcement_timer: Arc<RwLock<WaitTimer>>,
     reparent_timer: Arc<RwLock<Option<WaitTimer>>>,
-    reparent_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
-}
-#[derive(Clone)]
-struct SnekState {
+
     ascending_path: Arc<RwLock<Option<SnekPathIndex>>>,
     descending_path: Arc<RwLock<Option<SnekPathIndex>>>,
     paths: Arc<RwLock<HashMap<SnekPathIndex, SnekPath>>>,
     candidate: Arc<RwLock<Option<SnekPath>>>,
 }
-pub struct Router {
-    pub(crate) upload: Receiver<Event>,
-
-    switch: SwitchState,
-    tree: TreeState,
-    snek: SnekState,
-}
 impl Router {
-    pub fn new(key: VerificationKey, download: Sender<Frame>, upload: Receiver<Event>) -> Self {
+    pub fn new(key: VerificationKey, download: Sender<Frame>, upload: Receiver<Frame>) -> Self {
         Self {
-            upload,
-            switch: SwitchState {
-                public_key: key,
-                download: Arc::new(download),
-                sockets: Default::default(),
-                ports: Default::default(),
-            },
-            tree: TreeState {
-                parent: Arc::new(RwLock::new(key)),
-                announcements: Default::default(),
-                sequence: Arc::new(RwLock::new(0)),
-                ordering: Arc::new(RwLock::new(0)),
-                announcement_timer: Arc::new(RwLock::new(WaitTimer::new(ANNOUNCEMENT_INTERVAL))),
-                reparent_timer: Arc::new(RwLock::new(None)),
-                reparent_handle: Arc::new(Mutex::new(None)),
-            },
-            snek: SnekState {
-                ascending_path: Arc::new(RwLock::new(None)),
-                descending_path: Arc::new(RwLock::new(None)),
-                paths: Arc::new(Default::default()),
-                candidate: Arc::new(RwLock::new(None)),
-            },
+            upload: Arc::new(Mutex::new(upload)),
+            public_key: Arc::new(key),
+            download: Arc::new(download),
+            sockets: Default::default(),
+            ports: Default::default(),
+            parent: Arc::new(RwLock::new(key)),
+            announcements: Default::default(),
+            sequence: Arc::new(RwLock::new(0)),
+            ordering: Arc::new(RwLock::new(0)),
+            announcement_timer: Arc::new(RwLock::new(WaitTimer::new(ANNOUNCEMENT_INTERVAL))),
+            reparent_timer: Arc::new(RwLock::new(None)),
+            ascending_path: Arc::new(RwLock::new(None)),
+            descending_path: Arc::new(RwLock::new(None)),
+            paths: Arc::new(Default::default()),
+            candidate: Arc::new(RwLock::new(None)),
+            running: Arc::new(RwLock::new(false)),
         }
     }
-    pub fn spawn(mut self) -> JoinHandle<Self> {
+    pub async fn start(&self) -> JoinHandle<Self> {
+        let mut running = self.running.write().await;
+        *running = true;
+        drop(running);
+        let router = self.clone();
         tokio::spawn(async move {
+            let mut upload = router.upload.lock().await;
             loop {
-                if let Some(event) = self.upload.recv().await {
-                    match event {
-                        Event::AddPeer { key, socket } => {
-                            self.add_peer(key, socket).await;
-                        }
-                        Event::HandleFrame(frame) => {
-                            Self::handle_frame(
-                                frame,
-                                self.switch.public_key,
-                                &self.switch,
-                                &self.tree,
-                                &self.snek,
-                            )
-                            .await;
-                        }
-                        Event::RemovePeer(_) => {}
-                        Event::SendFrameToPeer { frame, to: peer } => {
-                            if let Some(socket) = self.switch.sockets.read().await.get(&peer) {
-                                socket.lock().await.send(frame).await.unwrap();
-                            } else {
-                                debug!("No socket for {:?}", peer);
-                            }
-                        }
-                        Event::StopRouter => {
-                            break;
-                        }
-                    }
+                let running = router.running.read().await;
+                if *running == false {
+                    info!("Stopped router");
+                    break;
+                }
+                drop(running);
+                if let Some(frame) = upload.recv().await {
+                    router.handle_frame(frame, *router.public_key).await;
                 } else {
-                    debug!("Local event channel closed.");
+                    debug!("Local event channel closed. Stopping router");
                     break;
                 }
             }
-            trace!("Stopping router");
-            self.stop_router().await;
-            self
+            drop(upload);
+            router
         })
     }
-    async fn stop_router(&self) {
-
+    pub async fn stop(&self) {
+        *self.running.write().await = false;
     }
-    async fn add_peer(&self, peer: VerificationKey, socket: Framed<TcpStream, PineconeCodec>) {
-        let mut sockets = self.switch.sockets.write().await;
+    pub async fn add_peer(&self, peer: VerificationKey, socket: Framed<TcpStream, PineconeCodec>) {
+        let mut sockets = self.sockets.write().await;
         if sockets.contains_key(&peer) {
             info!("Couldn't add {:?} because it already exists", peer);
             return;
@@ -160,44 +116,40 @@ impl Router {
         drop(sockets);
         info!("Added peer {:?}", peer);
 
-        let port = Self::get_new_port(&self.switch).await;
-        self.switch.ports.write().await.insert(peer, port);
-        Self::send_tree_announcement(
-            peer,
-            Self::current_announcement(&self.switch, &self.tree).await,
-            &self.switch,
-        )
-        .await;
+        let port = self.get_new_port().await;
+        self.ports.write().await.insert(peer, port);
+        self.send_tree_announcement(peer, self.current_announcement().await)
+            .await;
 
         self.spawn_peer(peer).await;
     }
+
     async fn spawn_peer(&self, peer: VerificationKey) {
-        let switch = self.switch.clone();
-        let tree = self.tree.clone();
-        let snek = self.snek.clone();
+        let router = self.clone();
         tokio::spawn(async move {
             loop {
-                match Self::poll_peer(peer, &switch, &tree, &snek).await {
+                let running = router.running.read().await;
+                if *running == false {
+                    info!("Stopped router. Stopping peer {:?}", peer);
+                    break;
+                }
+                drop(running);
+                match router.poll_peer(peer).await {
                     Ok(_) => continue,
                     Err(_) => break,
                 }
             }
         });
     }
-    async fn poll_peer(
-        peer: VerificationKey,
-        switch: &SwitchState,
-        tree: &TreeState,
-        snek: &SnekState,
-    ) -> Result<(), ()> {
-        let sockets = switch.sockets.read().await;
+    async fn poll_peer(&self, peer: VerificationKey) -> Result<(), ()> {
+        let sockets = self.sockets.read().await;
         if let Some(socket) = sockets.get(&peer) {
             if let Ok(result) = Self::poll_socket(socket).await {
                 if let Some(decode_result) = result {
                     match decode_result {
                         Ok(frame) => {
                             trace!("Received {:?}", frame);
-                            Self::handle_frame(frame, peer, &switch, &tree, &snek).await;
+                            self.handle_frame(frame, peer).await;
                             return Ok(());
                         }
                         Err(e) => {
@@ -230,10 +182,10 @@ impl Router {
         result
     }
 
-    async fn get_new_port(switch: &SwitchState) -> Port {
+    async fn get_new_port(&self) -> Port {
         for i in 1.. {
             let mut used = false;
-            for port in switch.ports.read().await.values() {
+            for port in self.ports.read().await.values() {
                 if port == &i {
                     used = true;
                 }
@@ -249,34 +201,27 @@ impl Router {
         }
         unreachable!("Reached port limit of {}", Port::MAX);
     }
-    async fn disconnect_port(port: Port, switch: &SwitchState, tree: &TreeState, snek: &SnekState) {
-        let peer = Self::get_peer_on_port(port, switch).await.unwrap();
+    async fn disconnect_port(&self, port: Port) {
+        let peer = self.get_peer_on_port(port).await.unwrap();
         let mut bootstrap = false;
         // Scan the local DHT table for any routes that transited this now-dead
         // peering. If we find any then we need to send teardowns in the opposite
         // direction, so that nodes further along the path will learn that the
         // path was broken.
-        for (key, value) in snek.paths.read().await.clone() {
+        for (key, value) in self.paths.read().await.clone() {
             if value.destination == port || value.source == port {
-                Self::send_teardown_for_existing_path(
-                    port,
-                    key.public_key,
-                    key.path_id,
-                    switch,
-                    tree,
-                    snek,
-                )
-                .await;
+                self.send_teardown_for_existing_path(port, key.public_key, key.path_id)
+                    .await;
             }
         }
 
         // If the ascending path was also lost because it went via the now-dead
         // peering then clear that path (although we can't send a teardown) and
         // then bootstrap again.
-        if let Some(asc) = &snek.ascending_path.read().await.clone() {
-            let ascending = snek.paths.read().await.get(&asc).unwrap().clone();
+        if let Some(asc) = &self.ascending_path.read().await.clone() {
+            let ascending = self.paths.read().await.get(&asc).unwrap().clone();
             if ascending.destination == port {
-                Self::teardown_path(0, asc.public_key, asc.path_id, snek).await;
+                self.teardown_path(0, asc.public_key, asc.path_id).await;
                 bootstrap = true;
             }
         }
@@ -284,10 +229,10 @@ impl Router {
         // If the descending path was lost because it went via the now-dead
         // peering then clear that path (although we can't send a teardown) and
         // wait for another incoming setup.
-        if let Some(desc) = &snek.descending_path.read().await.clone() {
-            let descending = snek.paths.read().await.get(&desc).unwrap().clone();
+        if let Some(desc) = &self.descending_path.read().await.clone() {
+            let descending = self.paths.read().await.get(&desc).unwrap().clone();
             if descending.destination == port {
-                Self::teardown_path(0, desc.public_key, desc.path_id, snek).await;
+                self.teardown_path(0, desc.public_key, desc.path_id).await;
             }
         }
 
@@ -295,106 +240,102 @@ impl Router {
         // select a new parent. If we successfully choose a new parent (as in, we
         // don't end up promoting ourselves to a root) then we will also need to
         // send a new bootstrap into the network.
-        if Self::parent(tree).await == peer {
-            bootstrap = bootstrap || Self::parent_selection(switch, tree).await;
+        if self.parent().await == peer {
+            bootstrap = bootstrap || self.parent_selection().await;
         }
 
         if bootstrap {
-            Self::bootstrap_now(switch, tree, snek).await;
+            self.bootstrap_now().await;
         }
     }
 
-    async fn tree_announcement(of: VerificationKey, tree: &TreeState) -> Option<TreeAnnouncement> {
-        tree.announcements.read().await.get(&of).cloned()
+    async fn tree_announcement(&self, of: VerificationKey) -> Option<TreeAnnouncement> {
+        self.announcements.read().await.get(&of).cloned()
     }
-    async fn set_tree_announcement(
-        of: VerificationKey,
-        announcement: TreeAnnouncement,
-        tree: &TreeState,
-    ) {
-        tree.announcements
+    async fn set_tree_announcement(&self, of: VerificationKey, announcement: TreeAnnouncement) {
+        self.announcements
             .write()
             .await
             .insert(of.clone(), announcement);
     }
-    async fn port(of: VerificationKey, switch: &SwitchState) -> Option<Port> {
-        if  Self::public_key(switch) == of {
+    async fn port(&self, of: VerificationKey) -> Option<Port> {
+        if *self.public_key == of {
             return Some(0);
         }
-        let ports = switch.ports.read().await;
+        let ports = self.ports.read().await;
         ports.get(&of).cloned()
     }
-    async fn peers(switch: &SwitchState) -> Vec<VerificationKey> {
+    async fn peers(&self) -> Vec<VerificationKey> {
         let mut peers = Vec::new();
-        for (peer, port) in &*switch.ports.read().await {
+        for (peer, port) in &*self.ports.read().await {
             peers.push(peer.clone());
         }
         peers
     }
-    async fn parent(tree: &TreeState) -> VerificationKey {
-        *tree.parent.read().await
+    async fn parent(&self) -> VerificationKey {
+        *self.parent.read().await
     }
-    async fn set_parent(peer: VerificationKey, tree: &TreeState) {
+    async fn set_parent(&self, peer: VerificationKey) {
         info!("Setting parent to {:?}", peer);
-        *tree.parent.write().await = peer;
+        *self.parent.write().await = peer;
     }
-    fn public_key(switch: &SwitchState) -> VerificationKey {
-        switch.public_key
+    fn public_key(&self) -> VerificationKey {
+        *self.public_key
     }
-    async fn get_peer_on_port(port: Port, switch: &SwitchState) -> Option<VerificationKey> {
+    async fn get_peer_on_port(&self, port: Port) -> Option<VerificationKey> {
         if port == 0 {
-            return Some(Self::public_key(switch));
+            return Some(self.public_key());
         }
-        for (peer, peer_port) in &*switch.ports.read().await {
+        for (peer, peer_port) in &*self.ports.read().await {
             if &port == peer_port {
                 return Some(peer.clone());
             }
         }
         None
     }
-    async fn current_sequence(tree: &TreeState) -> SequenceNumber {
-        *tree.sequence.read().await
+    async fn current_sequence(&self) -> SequenceNumber {
+        *self.sequence.read().await
     }
-    async fn next_sequence(tree: &TreeState) -> SequenceNumber {
+    async fn next_sequence(&self) -> SequenceNumber {
         {
-            let mut sequence = tree.sequence.write().await;
+            let mut sequence = self.sequence.write().await;
             *sequence += 1;
         }
-        *tree.sequence.read().await
+        *self.sequence.read().await
     }
-    async fn current_ordering(tree: &TreeState) -> SequenceNumber {
-        *tree.ordering.read().await
+    async fn current_ordering(&self) -> SequenceNumber {
+        *self.ordering.read().await
     }
-    async fn next_ordering(tree: &TreeState) -> SequenceNumber {
+    async fn next_ordering(&self) -> SequenceNumber {
         {
-            let mut ordering = tree.ordering.write().await;
+            let mut ordering = self.ordering.write().await;
             *ordering += 1;
         }
-        *tree.ordering.read().await
+        *self.ordering.read().await
     }
-    async fn reparent_timer_expired(tree: &TreeState) -> bool {
-        let timer = tree.reparent_timer.read().await;
+    async fn reparent_timer_expired(&self) -> bool {
+        let timer = self.reparent_timer.read().await;
         if let Some(timer) = &*timer {
             timer.is_expired()
         } else {
             true
         }
     }
-    async fn set_reparent_timer(tree: &TreeState) {
+    async fn set_reparent_timer(&self) {
         trace!("Reparent in {:?}", REPARENT_WAIT_TIME);
-        *tree.reparent_timer.write().await = Some(WaitTimer::new(REPARENT_WAIT_TIME));
+        *self.reparent_timer.write().await = Some(WaitTimer::new(REPARENT_WAIT_TIME));
     }
-    async fn announcement_timer_expired(tree: &TreeState) -> bool {
-        tree.announcement_timer.read().await.is_expired()
+    async fn announcement_timer_expired(&self) -> bool {
+        self.announcement_timer.read().await.is_expired()
     }
-    async fn reset_announcement_timer(tree: &TreeState) {
-        *tree.announcement_timer.write().await = WaitTimer::new(ANNOUNCEMENT_INTERVAL);
+    async fn reset_announcement_timer(&self) {
+        *self.announcement_timer.write().await = WaitTimer::new(ANNOUNCEMENT_INTERVAL);
     }
-    async fn send_to_local(frame: Frame, switch: &SwitchState) {
-        switch.download.send(frame).await;
+    async fn send_to_local(&self, frame: Frame) {
+        self.download.send(frame).await.unwrap();
     }
-    async fn send(frame: Frame, to: VerificationKey, switch: &SwitchState) {
-        let sockets = switch.sockets.read().await;
+    async fn send(&self, frame: Frame, to: VerificationKey) {
+        let sockets = self.sockets.read().await;
         let socket = sockets.get(&to);
         if let Some(socket) = socket {
             trace!("Sending {:?}", frame);
@@ -405,103 +346,91 @@ impl Router {
         }
     }
 
-    async fn handle_frame(
-        frame: Frame,
-        from: VerificationKey,
-        switch: &SwitchState,
-        tree: &TreeState,
-        snek: &SnekState,
-    ) {
+    async fn handle_frame(&self, frame: Frame, from: VerificationKey) {
         match frame {
             Frame::TreeRouted(packet) => {
-                if let Some(peer) = Self::next_tree_hop(&packet, from, switch, tree).await {
+                if let Some(peer) = self.next_tree_hop(&packet, from).await {
                     let peer = peer;
-                    if peer == Self::public_key(switch) {
-                        Self::send_to_local(Frame::TreeRouted(packet), switch).await;
+                    if peer == self.public_key() {
+                        self.send_to_local(Frame::TreeRouted(packet)).await;
                         return;
                     }
-                    Self::send(Frame::TreeRouted(packet), peer, switch).await;
+                    self.send(Frame::TreeRouted(packet), peer).await;
                     return;
                 }
                 return;
             }
             Frame::SnekRouted(packet) => {
-                if let Some(peer) =
-                    Self::next_snek_hop(&packet, false, true, switch, tree, snek).await
-                {
+                if let Some(peer) = self.next_snek_hop(&packet, false, true).await {
                     let peer = peer;
-                    if peer == Self::public_key(switch) {
-                        Self::send_to_local(Frame::SnekRouted(packet), switch).await;
+                    if peer == *self.public_key {
+                        self.send_to_local(Frame::SnekRouted(packet)).await;
                         return;
                     }
-                    Self::send(Frame::SnekRouted(packet), peer, switch).await;
+                    self.send(Frame::SnekRouted(packet), peer).await;
                     return;
                 }
                 return;
             }
             Frame::TreeAnnouncement(announcement) => {
-                Self::handle_tree_announcement(announcement, from, switch, tree, snek).await;
+                self.handle_tree_announcement(announcement, from).await;
             }
 
             Frame::SnekBootstrap(bootstrap) => {
-                let next_hop =
-                    Self::next_snek_hop(&bootstrap, true, false, switch, tree, snek).await.unwrap();
-                if next_hop == Self::public_key(switch) {
-                    Self::handle_snek_bootstrap(bootstrap, switch, tree).await;
+                let next_hop = self.next_snek_hop(&bootstrap, true, false).await.unwrap();
+                if next_hop == *self.public_key {
+                    self.handle_snek_bootstrap(bootstrap).await;
                 } else {
                     trace!("Forwarding SnekBootstrap.");
-                    Self::send(Frame::SnekBootstrap(bootstrap), next_hop, switch).await;
+                    self.send(Frame::SnekBootstrap(bootstrap), next_hop).await;
                 }
             }
             Frame::SnekBootstrapACK(ack) => {
-                Self::handle_snek_bootstrap_ack(ack, switch, tree, snek).await;
+                self.handle_snek_bootstrap_ack(ack).await;
             }
             Frame::SnekSetup(setup) => {
-                let from_port = Self::port(from, switch).await.unwrap().clone();
-                let next_hop = Self::next_tree_hop(&setup, from, switch, tree)
-                    .await
-                    .unwrap();
-                let next_hop_port = Self::port(next_hop, switch).await.unwrap().clone();
-                Self::handle_setup(from_port, setup, next_hop_port, switch, tree, snek).await;
+                let from_port = self.port(from).await.unwrap().clone();
+                let next_hop = self.next_tree_hop(&setup, from).await.unwrap();
+                let next_hop_port = self.port(next_hop).await.unwrap().clone();
+                self.handle_setup(from_port, setup, next_hop_port).await;
             }
             Frame::SnekSetupACK(ack) => {
-                let port = Self::port(from, switch).await.unwrap().clone();
-                Self::handle_setup_ack(port, ack, switch, tree, snek).await;
+                let port = self.port(from).await.unwrap().clone();
+                self.handle_setup_ack(port, ack).await;
             }
             Frame::SnekTeardown(teardown) => {
-                let port = Self::port(from, switch).await.unwrap().clone();
-                Self::handle_teardown(port, teardown, snek).await;
+                let port = self.port(from).await.unwrap().clone();
+                self.handle_teardown(port, teardown).await;
             }
         }
     }
     async fn next_tree_hop(
+        &self,
         frame: &impl TreeRouted,
         from: VerificationKey,
-        switch: &SwitchState,
-        tree: &TreeState,
     ) -> Option<VerificationKey> {
-        if frame.destination_coordinates() == Self::coordinates(switch, tree).await {
-            return Some(Self::public_key(switch));
+        if frame.destination_coordinates() == self.coordinates().await {
+            return Some(self.public_key());
         }
         let our_distance = frame
             .destination_coordinates()
-            .distance_to(&Self::coordinates(switch, tree).await);
+            .distance_to(&self.coordinates().await);
         if our_distance == 0 {
-            return Some(Self::public_key(switch));
+            return Some(self.public_key());
         }
 
         let mut best_peer = None;
         let mut best_distance = our_distance;
         let mut best_ordering = SequenceNumber::MAX;
-        for peer in Self::peers(switch).await {
+        for peer in self.peers().await {
             if peer == from {
                 continue; // don't route back where the packet came from
             }
-            if let None = Self::tree_announcement(peer, tree).await {
+            if let None = self.tree_announcement(peer).await {
                 continue; // ignore peers that haven't sent us announcements
             }
-            if let Some(announcement) = Self::tree_announcement(peer, tree).await {
-                if !(Self::current_root(switch, tree).await == announcement.root) {
+            if let Some(announcement) = self.tree_announcement(peer).await {
+                if !(self.current_root().await == announcement.root) {
                     continue; // ignore peers that are following a different root or seq
                 }
 
@@ -543,17 +472,11 @@ impl Router {
         }
         better_candidate
     }
-    async fn handle_tree_announcement(
-        mut frame: TreeAnnouncement,
-        from: VerificationKey,
-        switch: &SwitchState,
-        tree: &TreeState,
-        snek: &SnekState,
-    ) {
+    async fn handle_tree_announcement(&self, mut frame: TreeAnnouncement, from: VerificationKey) {
         frame.receive_time = SystemTime::now();
-        frame.receive_order = Self::next_ordering(tree).await;
+        frame.receive_order = self.next_ordering().await;
 
-        if let Some(announcement) = Self::tree_announcement(from, tree).await {
+        if let Some(announcement) = self.tree_announcement(from).await {
             if frame.has_same_root_key(&announcement) {
                 if frame.replayed_old_sequence(&announcement) {
                     debug!("Announcement replayed old sequence. Dropping");
@@ -562,183 +485,138 @@ impl Router {
             }
         }
         trace!("Storing announcement {}", frame);
-        Self::set_tree_announcement(from, frame.clone(), tree).await;
-        if !Self::reparent_timer_expired(tree).await {
+        self.set_tree_announcement(from, frame.clone()).await;
+        if !self.reparent_timer_expired().await {
             debug!("Waiting to reparent");
             return;
         }
-        if from == Self::parent(tree).await {
+        if from == self.parent().await {
             trace!("Announcement came from parent");
-            if frame.is_loop_of_child(&Self::public_key(switch)) {
+            if frame.is_loop_of_child(&self.public_key()) {
                 // SelectNewParentWithWait
                 debug!("Announcement contains loop");
-                Self::become_root(switch, tree).await;
-                Self::reparent(true, switch, tree, snek).await;
+                self.become_root().await;
+                self.reparent(true).await;
                 return;
             }
-            if frame.root.public_key
-                < Self::current_announcement(switch, tree)
-                    .await
-                    .root
-                    .public_key
-            {
+            if frame.root.public_key < self.current_announcement().await.root.public_key {
                 // SelectNewParentWithWait
                 debug!("Announcement has weaker root");
-                Self::become_root(switch, tree).await;
-                Self::reparent(true, switch, tree, snek).await;
+                self.become_root().await;
+                self.reparent(true).await;
                 return;
             }
-            if frame.root.public_key
-                > Self::current_announcement(switch, tree)
-                    .await
-                    .root
-                    .public_key
-            {
+            if frame.root.public_key > self.current_announcement().await.root.public_key {
                 // AcceptUpdate
                 debug!("Announcement has stronger root. Forwarding to peers");
-                Self::send_tree_announcements_to_all(
-                    Self::current_announcement(switch, tree).await,
-                    switch,
-                )
-                .await;
+                self.send_tree_announcements_to_all(self.current_announcement().await)
+                    .await;
                 return;
             }
-            if frame.root.public_key
-                == Self::current_announcement(switch, tree)
-                    .await
-                    .root
-                    .public_key
-            {
+            if frame.root.public_key == self.current_announcement().await.root.public_key {
                 if frame.root.sequence_number
-                    > Self::current_announcement(switch, tree)
-                        .await
-                        .root
-                        .sequence_number
+                    > self.current_announcement().await.root.sequence_number
                 {
                     // AcceptUpdate
                     trace!("Announcement has higher sequence. Forwarding to peers");
-                    Self::send_tree_announcements_to_all(
-                        Self::current_announcement(switch, tree).await,
-                        switch,
-                    )
-                    .await;
+                    self.send_tree_announcements_to_all(self.current_announcement().await)
+                        .await;
                     return;
                 }
                 // SelectNewParentWithWait
                 debug!("Announcement replayed current sequence");
-                Self::become_root(switch, tree).await;
-                Self::reparent(true, switch, tree, snek).await;
+                self.become_root().await;
+                self.reparent(true).await;
                 return;
             }
         } else {
             trace!("Announcement didn't come from parent");
-            if frame.is_loop_of_child(&Self::public_key(switch)) {
+            if frame.is_loop_of_child(&self.public_key()) {
                 // DropFrame
                 trace!("Announcement contains loop. Dropping");
                 return;
             }
-            if frame.root.public_key
-                > Self::current_announcement(switch, tree)
-                    .await
-                    .root
-                    .public_key
-            {
+            if frame.root.public_key > self.current_announcement().await.root.public_key {
                 // AcceptNewParent
                 trace!("Announcement has stronger root. Forwarding to peers");
-                Self::set_parent(from.clone(), tree).await;
-                let announcement = Self::current_announcement(switch, tree).await;
-                Self::send_tree_announcements_to_all(announcement, switch).await;
+                self.set_parent(from.clone()).await;
+                let announcement = self.current_announcement().await;
+                self.send_tree_announcements_to_all(announcement).await;
                 return;
             }
-            if frame.root.public_key
-                < Self::current_announcement(switch, tree)
-                    .await
-                    .root
-                    .public_key
-            {
+            if frame.root.public_key < self.current_announcement().await.root.public_key {
                 // InformPeerOfStrongerRoot
                 trace!("Announcement has weaker root. Sending my announcement");
-                Self::send_tree_announcement(
-                    from,
-                    Self::current_announcement(switch, tree).await,
-                    switch,
-                )
-                .await;
+                self.send_tree_announcement(from, self.current_announcement().await)
+                    .await;
                 return;
             }
-            if frame.root.public_key
-                == Self::current_announcement(switch, tree)
-                    .await
-                    .root
-                    .public_key
-            {
+            if frame.root.public_key == self.current_announcement().await.root.public_key {
                 // SelectNewParent
                 trace!("Announcement has same root");
-                Self::reparent(false, switch, tree, snek).await;
+                self.reparent(false).await;
                 return;
             }
         }
     }
-    async fn current_announcement(switch: &SwitchState, tree: &TreeState) -> TreeAnnouncement {
-        if let Some(announcement) = Self::tree_announcement(Self::parent(tree).await, tree).await {
+    async fn current_announcement(&self) -> TreeAnnouncement {
+        if let Some(announcement) = self.tree_announcement(self.parent().await).await {
             announcement.clone()
         } else {
             TreeAnnouncement {
                 root: Root {
-                    public_key: Self::public_key(switch),
-                    sequence_number: Self::current_sequence(tree).await,
+                    public_key: self.public_key(),
+                    sequence_number: self.current_sequence().await,
                 },
                 signatures: vec![],
                 receive_time: SystemTime::now(),
-                receive_order: Self::current_ordering(tree).await,
+                receive_order: self.current_ordering().await,
             }
         }
     }
-    async fn coordinates(switch: &SwitchState, tree: &TreeState) -> Coordinates {
-        Self::current_announcement(switch, tree).await.coords()
+    async fn coordinates(&self) -> Coordinates {
+        self.current_announcement().await.coords()
     }
-    async fn send_tree_announcements_to_all(announcement: TreeAnnouncement, switch: &SwitchState) {
+    async fn send_tree_announcements_to_all(&self, announcement: TreeAnnouncement) {
         trace!("Sending tree announcements to all peers");
-        for peer in Self::peers(switch).await {
-            Self::send_tree_announcement(peer, announcement.clone(), switch).await;
+        for peer in self.peers().await {
+            self.send_tree_announcement(peer, announcement.clone())
+                .await;
         }
     }
-    async fn send_tree_announcement(
-        to: VerificationKey,
-        announcement: TreeAnnouncement,
-        switch: &SwitchState,
-    ) {
-        let port = Self::port(to, switch).await.unwrap();
-        let signed_announcement = announcement.append_signature(switch.public_key, port);
+    async fn send_tree_announcement(&self, to: VerificationKey, announcement: TreeAnnouncement) {
+        let port = self.port(to).await.unwrap();
+        let signed_announcement = announcement.append_signature(self.public_key(), port);
         debug!("Sending tree announcement to port {}", port);
-        Self::send(Frame::TreeAnnouncement(signed_announcement), to, switch).await;
+        self.send(Frame::TreeAnnouncement(signed_announcement), to)
+            .await;
     }
-    async fn new_tree_announcement(switch: &SwitchState, tree: &TreeState) -> TreeAnnouncement {
+    async fn new_tree_announcement(&self) -> TreeAnnouncement {
         TreeAnnouncement {
             root: Root {
-                public_key: Self::public_key(switch),
-                sequence_number: Self::next_sequence(tree).await,
+                public_key: self.public_key(),
+                sequence_number: self.next_sequence().await,
             },
             signatures: vec![],
             receive_time: SystemTime::now(),
             receive_order: 0,
         }
     }
-    async fn parent_selection(switch: &SwitchState, tree: &TreeState) -> bool {
+    async fn parent_selection(&self) -> bool {
         trace!("Running parent selection...");
-        if Self::public_key(switch) > Self::current_root(switch, tree).await.public_key {
+        if self.public_key() > self.current_root().await.public_key {
             debug!("My key is stronger than current root");
-            Self::become_root(switch, tree).await;
+            self.become_root().await;
         }
-        let mut best_root = Self::current_root(switch, tree).await;
+        let mut best_root = self.current_root().await;
         let mut best_peer = None;
         let mut best_order = SequenceNumber::MAX;
-        for peer in Self::peers(switch).await {
-            if let Some(announcement) = Self::tree_announcement(peer, tree).await {
+        for peer in self.peers().await {
+            if let Some(announcement) = self.tree_announcement(peer).await {
                 if announcement.receive_time.elapsed().unwrap() > ANNOUNCEMENT_TIMEOUT {
                     continue;
                 }
-                if announcement.is_loop_of_child(&Self::public_key(switch)) {
+                if announcement.is_loop_of_child(&self.public_key()) {
                     continue;
                 }
                 if announcement.root > best_root {
@@ -758,89 +636,77 @@ impl Router {
         }
         match best_peer {
             Some(best_peer) => {
-                if best_peer == Self::parent(tree).await {
+                if best_peer == self.parent().await {
                     debug!("Current parent is the best available parent");
                     return false;
                 }
                 let best_peer = best_peer.clone();
-                Self::set_parent(best_peer, tree).await;
-                Self::send_tree_announcements_to_all(
-                    Self::current_announcement(switch, tree).await,
-                    switch,
-                )
-                .await;
+                self.set_parent(best_peer).await;
+                self.send_tree_announcements_to_all(self.current_announcement().await)
+                    .await;
                 return true;
             }
             None => {
                 debug!("I am root");
-                Self::become_root(switch, tree).await;
+                self.become_root().await;
                 return false;
             }
         }
     }
-    async fn become_root(switch: &SwitchState, tree: &TreeState) {
+    async fn become_root(&self) {
         trace!("Becoming root");
-        Self::set_parent(Self::public_key(switch).clone(), tree).await;
+        self.set_parent(self.public_key().clone()).await;
     }
-    async fn reparent(wait: bool, switch: &SwitchState, tree: &TreeState, snek: &SnekState) {
-        let switch = switch.clone();
-        let tree = tree.clone();
-        let snek = snek.clone();
+    async fn reparent(&self, wait: bool) {
+        let router = self.clone();
         tokio::spawn(async move {
             if wait {
                 trace!("Waiting to reparent");
                 sleep(REPARENT_WAIT_TIME).await;
             }
             trace!("Re-parenting");
-            if Self::parent_selection(&switch, &tree).await {
-                Self::bootstrap_now(&switch, &tree, &snek).await;
+            if router.parent_selection().await {
+                router.bootstrap_now().await;
             }
         });
     }
-    async fn current_root(switch: &SwitchState, tree: &TreeState) -> Root {
-        Self::current_announcement(switch, tree).await.root
+    async fn current_root(&self) -> Root {
+        self.current_announcement().await.root
     }
-    async fn maintain_tree(wait: bool, switch: &SwitchState, tree: &TreeState, snek: &SnekState) {
-        if Self::i_am_root(switch, tree).await {
-            if Self::announcement_timer_expired(tree).await && wait {
-                Self::reset_announcement_timer(tree).await;
-                let announcement = Self::new_tree_announcement(switch, tree).await;
-                Self::send_tree_announcements_to_all(announcement, switch).await;
+    async fn maintain_tree(&self, wait: bool) {
+        if self.i_am_root().await {
+            if self.announcement_timer_expired().await && wait {
+                self.reset_announcement_timer().await;
+                let announcement = self.new_tree_announcement().await;
+                self.send_tree_announcements_to_all(announcement).await;
             }
         }
-        Self::reparent(true, switch, tree, snek).await;
+        self.reparent(true).await;
     }
-    async fn i_am_root(switch: &SwitchState, tree: &TreeState) -> bool {
-        Self::public_key(switch) == Self::parent(tree).await
+    async fn i_am_root(&self) -> bool {
+        self.public_key() == self.parent().await
     }
 
     /// `maintain_snake` is responsible for working out if we need to send bootstraps
     /// or to clean up any old paths.
-    async fn maintain_snek(switch: &SwitchState, tree: &TreeState, snek: &SnekState) {
+    async fn maintain_snek(&self) {
         // Work out if we are able to bootstrap. If we are the root node then
         // we don't send bootstraps, since there's nowhere for them to go —
         // bootstraps are sent up to the next ascending node, but as the root,
         // we already have the highest key on the network.
-        let root_announcement = Self::current_announcement(switch, tree).await;
-        let can_bootstrap = Self::parent(tree).await != Self::public_key(switch)
-            && root_announcement.root.public_key != Self::public_key(switch);
+        let root_announcement = self.current_announcement().await;
+        let can_bootstrap = self.parent().await != self.public_key()
+            && root_announcement.root.public_key != self.public_key();
         let mut will_bootstrap = false;
 
         // The ascending node is the node with the next highest key.
-        if let Some(asc) = &snek.ascending_path.read().await.clone() {
-            let ascending = snek.paths.read().await.get(&asc).unwrap().clone();
+        if let Some(asc) = &self.ascending_path.read().await.clone() {
+            let ascending = self.paths.read().await.get(&asc).unwrap().clone();
             if !ascending.valid() {
                 // The ascending path entry has expired, so tear it down and then
                 // see if we can bootstrap again.
-                Self::send_teardown_for_existing_path(
-                    0,
-                    asc.public_key,
-                    asc.path_id,
-                    switch,
-                    tree,
-                    snek,
-                )
-                .await;
+                self.send_teardown_for_existing_path(0, asc.public_key, asc.path_id)
+                    .await;
             }
             if ascending.root == root_announcement.root {
                 // The ascending node was set up with a different root key or sequence
@@ -855,54 +721,40 @@ impl Router {
         }
 
         // The descending node is the node with the next lowest key.
-        if let Some(desc) = &snek.descending_path.read().await.clone() {
-            let descending_path = snek.paths.read().await.get(&desc).unwrap().clone();
+        if let Some(desc) = &self.descending_path.read().await.clone() {
+            let descending_path = self.paths.read().await.get(&desc).unwrap().clone();
             if !descending_path.valid() {
                 // The descending path has expired, so tear it down and then that should
                 // prompt the remote side into sending a new bootstrap to set up a new
                 // path, if they are still alive.
-                Self::send_teardown_for_existing_path(
-                    0,
-                    desc.public_key,
-                    desc.path_id,
-                    switch,
-                    tree,
-                    snek,
-                )
-                .await;
+                self.send_teardown_for_existing_path(0, desc.public_key, desc.path_id)
+                    .await;
             }
         }
 
         // Clean up any paths that were installed more than 5 seconds ago but haven't
         // been activated by a setup ACK.
-        for (index, path) in snek.paths.read().await.clone() {
+        for (index, path) in self.paths.read().await.clone() {
             if !path.active && path.last_seen.elapsed().unwrap() > Duration::from_secs(5) {
-                Self::send_teardown_for_existing_path(
-                    0,
-                    index.public_key,
-                    index.path_id,
-                    switch,
-                    tree,
-                    snek,
-                )
-                .await;
+                self.send_teardown_for_existing_path(0, index.public_key, index.path_id)
+                    .await;
             }
         }
 
         // If one of the previous conditions means that we need to bootstrap, then
         // send the actual bootstrap message into the network.
         if will_bootstrap {
-            Self::bootstrap_now(switch, tree, snek).await;
+            self.bootstrap_now().await;
         }
     }
 
     /// `bootstrap_now` is responsible for sending a bootstrap massage to the network
-    async fn bootstrap_now(switch: &SwitchState, tree: &TreeState, snek: &SnekState) {
+    async fn bootstrap_now(&self) {
         trace!("Bootstrapping ...");
         // If we are the root node then there's no point in trying to bootstrap. We
         // already have the highest public key on the network so a bootstrap won't be
         // able to go anywhere in ascending order.
-        if Self::parent(tree).await == Self::public_key(switch) {
+        if self.parent().await == self.public_key() {
             trace!("Not bootstrapping because I am root");
             return;
         }
@@ -912,13 +764,11 @@ impl Router {
         // the path was set up) then we don't need to send another bootstrap message just
         // yet. We'll either wait for the path to be torn down, expire or for the tree to
         // change.
-        let announcement = Self::current_announcement(switch, tree).await;
-        if let Some(asc) = &*snek.ascending_path.read().await {
-            let paths = snek.paths.read().await;
+        let announcement = self.current_announcement().await;
+        if let Some(asc) = &*self.ascending_path.read().await {
+            let paths = self.paths.read().await;
             let ascending = paths.get(&asc).unwrap();
-            let asc_peer = Self::get_peer_on_port(ascending.source, switch)
-                .await
-                .unwrap();
+            let asc_peer = self.get_peer_on_port(ascending.source).await.unwrap();
             if ascending.root == announcement.root {
                 trace!("Not bootstrapping because a valid ascending path is set");
                 return;
@@ -929,76 +779,66 @@ impl Router {
         // number in the update so that the remote side can determine if we are both using
         // the same root node when processing the update.
         let frame = SnekBootstrap {
-            root: Self::current_root(switch, tree).await,
-            destination_key: Self::public_key(switch),
-            source: Self::coordinates(switch, tree).await,
+            root: self.current_root().await,
+            destination_key: self.public_key(),
+            source: self.coordinates().await,
             path_id: thread_rng().gen(),
         };
 
-        if let Some(peer) = Self::next_snek_hop(&frame, true, false, switch, tree, snek).await {
+        if let Some(peer) = self.next_snek_hop(&frame, true, false).await {
             trace!("Bootstrapping path {} ", frame.path_id);
-            Self::send(Frame::SnekBootstrap(frame), peer, switch).await;
+            self.send(Frame::SnekBootstrap(frame), peer).await;
         } else {
             trace!("Not bootstrapping because no next hop was found");
         }
     }
 
     async fn next_snek_hop(
+        &self,
         frame: &impl SnekRouted,
         bootstrap: bool,
         traffic: bool,
-        switch: &SwitchState,
-        tree: &TreeState,
-        snek: &SnekState,
     ) -> Option<VerificationKey> {
         let destination_key = frame.destination_key();
         // If the message isn't a bootstrap message and the destination is for our
         // own public key, handle the frame locally — it's basically loopback.
-        if !bootstrap && Self::public_key(switch) == destination_key {
-            return Some(Self::public_key(switch));
+        if !bootstrap && self.public_key() == destination_key {
+            return Some(self.public_key());
         }
 
         // We start off with our own key as the best key. Any suitable next-hop
         // candidate has to improve on our own key in order to forward the frame.
         let mut best_peer = None;
         if !traffic {
-            best_peer = Some(Self::public_key(switch));
+            best_peer = Some(self.public_key());
         }
-        let mut best_key = Self::public_key(switch);
+        let mut best_key = self.public_key();
 
         // Check if we can use the path to the root via our parent as a starting
         // point. We can't do this if we are the root node as there would be no
         // parent or ascending paths.
-        if Self::parent(tree).await != Self::public_key(switch) {
+        if self.parent().await != self.public_key() {
             if bootstrap && best_key == destination_key {
                 // Bootstraps always start working towards their root so that they
                 // go somewhere rather than getting stuck.
-                best_key = Self::current_announcement(switch, tree)
-                    .await
-                    .root
-                    .public_key;
-                best_peer = Some(Self::parent(tree).await)
+                best_key = self.current_announcement().await.root.public_key;
+                best_peer = Some(self.parent().await)
             }
             if Self::dht_ordered(
                 &best_key,
                 &destination_key,
-                &Self::current_announcement(switch, tree)
-                    .await
-                    .root
-                    .public_key,
+                &self.current_announcement().await.root.public_key,
             ) {
                 // The destination key is higher than our own key, so start using
                 // the path to the root as the first candidate.
-                best_key = Self::current_announcement(switch, tree)
-                    .await
-                    .root
-                    .public_key;
-                best_peer = Some(Self::parent(tree).await)
+                best_key = self.current_announcement().await.root.public_key;
+                best_peer = Some(self.parent().await)
             }
 
             // Check our direct ancestors in the tree, that is, all nodes between
             // ourselves and the root node via the parent port.
-            for ancestor in Self::current_announcement(switch, tree)
+            for ancestor in self
+                .current_announcement()
                 .await
                 .signatures
                 .iter()
@@ -1006,18 +846,18 @@ impl Router {
             {
                 if !bootstrap && ancestor == destination_key && best_key != destination_key {
                     best_key = ancestor;
-                    best_peer = Some(Self::parent(tree).await);
+                    best_peer = Some(self.parent().await);
                 }
                 if Self::dht_ordered(&destination_key, &ancestor, &best_key) {
                     best_key = ancestor;
-                    best_peer = Some(Self::parent(tree).await);
+                    best_peer = Some(self.parent().await);
                 }
             }
         }
 
         // Check all of the ancestors of our direct peers too, that is, all nodes
         // between our direct peer and the root node.
-        for (peer, announcement) in &*tree.announcements.read().await {
+        for (peer, announcement) in &*self.announcements.read().await {
             for hop in &announcement.signatures {
                 if !bootstrap
                     && hop.signing_public_key == destination_key
@@ -1038,7 +878,7 @@ impl Router {
         // example, only in this case it would make more sense to route directly
         // to the peer via our peering with them as opposed to routing via our
         // parent port.
-        for peer in Self::peers(switch).await {
+        for peer in self.peers().await {
             if best_key == peer {
                 best_key = peer;
                 best_peer = Some(peer);
@@ -1049,7 +889,7 @@ impl Router {
         // side of the DHT paths. Since setups travel from the lower key to the
         // higher one, this is effectively looking for paths that descend through
         // keyspace toward lower keys rather than ascend toward higher ones.
-        for (key, entry) in &*snek.paths.read().await {
+        for (key, entry) in &*self.paths.read().await {
             if !entry.valid() || entry.source == 0 {
                 continue;
             }
@@ -1058,11 +898,11 @@ impl Router {
             }
             if !bootstrap && key.public_key == destination_key && best_key != destination_key {
                 best_key = key.public_key;
-                best_peer = Some(Self::get_peer_on_port(entry.source, switch).await.unwrap());
+                best_peer = Some(self.get_peer_on_port(entry.source).await.unwrap());
             }
             if Self::dht_ordered(&destination_key, &key.public_key, &best_key) {
                 best_key = key.public_key;
-                best_peer = Some(Self::get_peer_on_port(entry.source, switch).await.unwrap());
+                best_peer = Some(self.get_peer_on_port(entry.source).await.unwrap());
             }
         }
         best_peer
@@ -1070,11 +910,11 @@ impl Router {
 
     /// `handle_bootstrap` is called in response to receiving a bootstrap packet.
     /// This function will send a bootstrap ACK back to the sender.
-    async fn handle_snek_bootstrap(frame: SnekBootstrap, switch: &SwitchState, tree: &TreeState) {
+    async fn handle_snek_bootstrap(&self, frame: SnekBootstrap) {
         // Check that the root key and sequence number in the update match our
         // current root, otherwise we won't be able to route back to them using
         // tree routing anyway. If they don't match, silently drop the bootstrap.
-        if Self::current_root(switch, tree).await == frame.root {
+        if self.current_root().await == frame.root {
             // In response to a bootstrap, we'll send back a bootstrap ACK packet to
             // the sender. We'll include our own root details in the ACK.
             let frame = SnekBootstrapAck {
@@ -1083,16 +923,14 @@ impl Router {
                 // destination of the ACK packet to that.
                 destination_coordinates: frame.source.clone(),
                 destination_key: frame.destination_key,
-                source_coordinates: Self::coordinates(switch, tree).await,
-                source_key: Self::public_key(switch),
-                root: Self::current_root(switch, tree).await,
+                source_coordinates: self.coordinates().await,
+                source_key: self.public_key(),
+                root: self.current_root().await,
                 path_id: frame.path_id,
             };
-            if let Some(peer) =
-                Self::next_tree_hop(&frame, Self::public_key(switch), switch, tree).await
-            {
+            if let Some(peer) = self.next_tree_hop(&frame, self.public_key()).await {
                 trace!("Responding to SnekBootstrap with Ack.");
-                Self::send(Frame::SnekBootstrapACK(frame), peer, switch).await;
+                self.send(Frame::SnekBootstrapACK(frame), peer).await;
             } else {
                 debug!("No next tree hop for BootstrapAck");
             }
@@ -1105,22 +943,17 @@ impl Router {
     /// packet. This function will work out whether the remote node is a suitable
     /// candidate to set up an outbound path to, and if so, will send path setup
     /// packets to the network.
-    async fn handle_snek_bootstrap_ack(
-        ack: SnekBootstrapAck,
-        switch: &SwitchState,
-        tree: &TreeState,
-        snek: &SnekState,
-    ) {
-        let ascending_path = snek.ascending_path.read().await;
-        let mut paths = snek.paths.write().await;
+    async fn handle_snek_bootstrap_ack(&self, ack: SnekBootstrapAck) {
+        let ascending_path = self.ascending_path.read().await;
+        let mut paths = self.paths.write().await;
         let mut update = false;
-        if ack.source_key == Self::public_key(switch) {
+        if ack.source_key == self.public_key() {
             // We received a bootstrap ACK from ourselves. This shouldn't happen,
             // so either another node has forwarded it to us incorrectly, or
             // a routing loop has occurred somewhere. Don't act on the bootstrap
             // in that case.
             trace!("Received own bootstrap ack. Dropping");
-        } else if ack.root != Self::current_root(switch, tree).await {
+        } else if ack.root != self.current_root().await {
             // The root key in the bootstrap ACK doesn't match our own key, or the
             // sequence doesn't match, so it is quite possible that routing setup packets
             // using tree routing would fail.
@@ -1136,7 +969,7 @@ impl Router {
                         trace!("Received updated bootstrap-ack from current ascending node. Sending new path setup.");
                         update = true
                     } else if Self::dht_ordered(
-                        &Self::public_key(switch),
+                        &self.public_key(),
                         &ack.source_key,
                         &ascending.origin,
                     ) {
@@ -1149,7 +982,7 @@ impl Router {
                     }
                 } else {
                     // Ascending Path expired.
-                    if Self::public_key(switch) < ack.source_key {
+                    if self.public_key() < ack.source_key {
                         // We don't know about an ascending node and at the moment we don't know
                         // any better candidates, so we'll accept a bootstrap ACK from a node with a
                         // key higher than ours (so that it matches descending order).
@@ -1160,7 +993,7 @@ impl Router {
             }
         } else if None == *ascending_path {
             // We don't have an ascending entry
-            if Self::public_key(switch) < ack.source_key {
+            if self.public_key() < ack.source_key {
                 // We don't know about an ascending node and at the moment we don't know
                 // any better candidates, so we'll accept a bootstrap ACK from a node with a
                 // key higher than ours (so that it matches descending order).
@@ -1182,13 +1015,13 @@ impl Router {
         // public key, since this is the lower of the two keys that intermediate nodes
         // will populate into their routing tables.
         let setup = SnekSetup {
-            root: Self::current_root(switch, tree).await,
+            root: self.current_root().await,
             destination: ack.source_coordinates,
             destination_key: ack.source_key.clone(),
-            source_key: Self::public_key(switch),
+            source_key: self.public_key(),
             path_id: ack.path_id,
         };
-        let next_hop = Self::next_tree_hop(&setup, Self::public_key(switch), switch, tree).await;
+        let next_hop = self.next_tree_hop(&setup, self.public_key()).await;
 
         // Importantly, we will only create a DHT entry if it appears as though our next
         // hop has actually accepted the packet. Otherwise we'll create a path entry and
@@ -1200,21 +1033,21 @@ impl Router {
                 return;
             }
             Some(next_peer) => {
-                if Self::public_key(switch) == next_peer {
+                if self.public_key() == next_peer {
                     // The peer is local, which shouldn't happen.
                     debug!("Next hop for SnekSetup is self. Dropping.");
                     return;
                 }
-                Self::send(Frame::SnekSetup(setup), next_peer, switch).await;
+                self.send(Frame::SnekSetup(setup), next_peer).await;
                 let index = SnekPathIndex {
-                    public_key: Self::public_key(switch),
+                    public_key: self.public_key(),
                     path_id: ack.path_id.clone(),
                 };
                 let entry = SnekPath {
                     origin: ack.source_key,
                     target: ack.source_key,
                     source: 0,
-                    destination: Self::port(next_peer, switch).await.unwrap().clone(),
+                    destination: self.port(next_peer).await.unwrap().clone(),
                     last_seen: SystemTime::now(),
                     root: ack.root.clone(),
                     active: false,
@@ -1228,13 +1061,10 @@ impl Router {
                         && dht_key.public_key /*TODO dht_key.public_key OR entry.public_key which doesn't exist*/
                         != ack.source_key
                     {
-                        Self::send_teardown_for_existing_path(
+                        self.send_teardown_for_existing_path(
                             0,
                             dht_key.public_key,
                             dht_key.path_id,
-                            switch,
-                            tree,
-                            snek,
                         )
                         .await;
                     }
@@ -1242,7 +1072,7 @@ impl Router {
                 // Install the new route into the DHT.
                 trace!("Adding route {:?} to DHT", index);
                 paths.insert(index, entry.clone());
-                *snek.candidate.write().await = Some(entry);
+                *self.candidate.write().await = Some(entry);
             }
         }
     }
@@ -1250,19 +1080,12 @@ impl Router {
     /// `handle_setup` is called in response to receiving setup packets. Note that
     /// these packets are handled even as we forward them, as setup packets should be
     /// processed by each node on the path.
-    async fn handle_setup(
-        from: Port,
-        rx: SnekSetup,
-        next_hop: Port,
-        switch: &SwitchState,
-        tree: &TreeState,
-        snek: &SnekState,
-    ) {
-        let mut descending_path = snek.ascending_path.write().await;
-        let mut paths = snek.paths.write().await;
-        if Self::current_root(switch, tree).await != rx.root {
+    async fn handle_setup(&self, from: Port, rx: SnekSetup, next_hop: Port) {
+        let mut descending_path = self.ascending_path.write().await;
+        let mut paths = self.paths.write().await;
+        if self.current_root().await != rx.root {
             trace!("SnekSetup has different root. Responding with Teardown");
-            Self::send_teardown_for_rejected_path(rx.source_key, rx.path_id, from, switch, tree)
+            self.send_teardown_for_rejected_path(rx.source_key, rx.path_id, from)
                 .await;
         }
         let index = SnekPathIndex {
@@ -1276,22 +1099,22 @@ impl Router {
         // have a new path ID.
         if paths.contains_key(&index) {
             trace!("Trigger new SnekSetup because of already existing path.");
-            Self::send_teardown_for_existing_path(0, rx.source_key, rx.path_id, switch, tree, snek)
+            self.send_teardown_for_existing_path(0, rx.source_key, rx.path_id)
                 .await;
-            Self::send_teardown_for_rejected_path(rx.source_key, rx.path_id, from, switch, tree)
+            self.send_teardown_for_rejected_path(rx.source_key, rx.path_id, from)
                 .await;
             return;
         }
         // If we're at the destination of the setup then update our predecessor
         // with information from the bootstrap.
-        if rx.destination_key == Self::public_key(switch) {
+        if rx.destination_key == self.public_key() {
             let mut update = false;
-            if Self::current_root(switch, tree).await != rx.root {
+            if self.current_root().await != rx.root {
                 // The root key in the bootstrap ACK doesn't match our own key, or the
                 // sequence doesn't match, so it is quite possible that routing setup packets
                 // using tree routing would fail.
                 trace!("SnekSetup has different root. Dropping.");
-            } else if !(rx.source_key < Self::public_key(switch)) {
+            } else if !(rx.source_key < self.public_key()) {
                 // The bootstrapping key should be less than ours but it isn't.
                 trace!("Key of bootstrapping node is not less then self. Dropping.");
             } else if let Some(desc) = &*descending_path {
@@ -1306,7 +1129,7 @@ impl Router {
                     } else if Self::dht_ordered(
                         &desc.public_key,
                         &rx.source_key,
-                        &Self::public_key(switch),
+                        &self.public_key(),
                     ) {
                         // The bootstrapping node is closer to us than our previous descending
                         // node was.
@@ -1315,7 +1138,7 @@ impl Router {
                     }
                 } else {
                     // Our descending entry has expired
-                    if rx.source_key < Self::public_key(switch) {
+                    if rx.source_key < self.public_key() {
                         // The bootstrapping key is less than ours so we'll acknowledge it.
                         trace!("Descending entry expired. Accepting SnekSetup.");
                         update = true;
@@ -1325,12 +1148,14 @@ impl Router {
                 }
             } else if let None = *descending_path {
                 // We don't have a descending entry
-                if rx.source_key < Self::public_key(switch) {
+                if rx.source_key < self.public_key() {
                     // The bootstrapping key is less than ours so we'll acknowledge it.
                     trace!("No descending entry. Accepting SnekSetup.");
                     update = true;
                 } else {
-                    trace!("No descending entry but received SnekSetup isn't dht-ordered. Dropping.")
+                    trace!(
+                        "No descending entry but received SnekSetup isn't dht-ordered. Dropping."
+                    )
                 }
             } else {
                 // The bootstrap conditions weren't met. This might just be because
@@ -1339,24 +1164,15 @@ impl Router {
                 trace!("Dropping non-valid SnekSetup.");
             }
             if !update {
-                Self::send_teardown_for_rejected_path(
-                    rx.source_key,
-                    rx.path_id,
-                    from,
-                    switch,
-                    tree,
-                )
-                .await;
+                self.send_teardown_for_rejected_path(rx.source_key, rx.path_id, from)
+                    .await;
                 return;
             }
             if let Some(previous_path) = &descending_path.clone() {
-                Self::send_teardown_for_existing_path(
+                self.send_teardown_for_existing_path(
                     0,
                     previous_path.public_key,
                     previous_path.path_id,
-                    switch,
-                    tree,
-                    snek,
                 )
                 .await;
             }
@@ -1377,10 +1193,9 @@ impl Router {
                 destination_key: rx.source_key,
                 path_id: index.path_id,
             };
-            Self::send(
+            self.send(
                 Frame::SnekSetupACK(setup_ack),
-                Self::get_peer_on_port(entry.source, switch).await.unwrap(),
-                switch,
+                self.get_peer_on_port(entry.source).await.unwrap(),
             )
             .await;
             return;
@@ -1388,15 +1203,15 @@ impl Router {
 
         // Try to forward the setup onto the next node first. If we
         // can't do that then there's no point in keeping the path.
-        let next_peer = Self::get_peer_on_port(next_hop, switch).await.unwrap();
-        if next_peer == Self::public_key(switch) {
+        let next_peer = self.get_peer_on_port(next_hop).await.unwrap();
+        if next_peer == self.public_key() {
             debug!("Can't forward SnekSetup. Tearing down path.");
-            Self::send_teardown_for_rejected_path(rx.source_key, rx.path_id, from, switch, tree)
+            self.send_teardown_for_rejected_path(rx.source_key, rx.path_id, from)
                 .await;
             return;
         } else {
             trace!("Forwarding SnekSetup.");
-            Self::send(Frame::SnekSetup(rx.clone()), next_peer, switch).await;
+            self.send(Frame::SnekSetup(rx.clone()), next_peer).await;
         }
         // Add a new routing table entry as we are intermediate to
         // the path.
@@ -1414,14 +1229,8 @@ impl Router {
 
     /// `handle_setup_ack` is called in response to a setup ACK
     /// packet from the network
-    async fn handle_setup_ack(
-        from: Port,
-        rx: SnekSetupAck,
-        switch: &SwitchState,
-        tree: &TreeState,
-        snek: &SnekState,
-    ) {
-        let mut paths = snek.paths.write().await;
+    async fn handle_setup_ack(&self, from: Port, rx: SnekSetupAck) {
+        let mut paths = self.paths.write().await;
         // Look up to see if we have a matching route. The route must be not active
         // (i.e. we haven't received a setup ACK for it yet) and must have arrived
         // from the port that the entry was populated with.
@@ -1432,12 +1241,13 @@ impl Router {
             if from == entry.destination || from == 0 {
                 if entry.source != 0 {
                     trace!("Forwarding SetupAck.");
-                    let entry_source = Self::get_peer_on_port(entry.source, switch).await.unwrap();
-                    Self::send(Frame::SnekSetupACK(rx.clone()), entry_source, switch).await;
+                    let entry_source = self.get_peer_on_port(entry.source).await.unwrap();
+                    self.send(Frame::SnekSetupACK(rx.clone()), entry_source)
+                        .await;
                 }
                 trace!("Activating Path {:?}", key);
                 entry.active = true;
-                let mut candidate = snek.candidate.write().await;
+                let mut candidate = self.candidate.write().await;
                 if let Some(candidate_path) = &*candidate {
                     if entry == candidate_path {
                         *candidate = None;
@@ -1449,22 +1259,23 @@ impl Router {
 
     /// `handle_teardown` is called in response to receiving a teardown
     /// packet from the network
-    async fn handle_teardown(from: Port, rx: SnekTeardown, snek: &SnekState) -> Vec<Port> {
-        Self::teardown_path(from, rx.destination_key, rx.path_id, snek).await
+    async fn handle_teardown(&self, from: Port, rx: SnekTeardown) -> Vec<Port> {
+        self.teardown_path(from, rx.destination_key, rx.path_id)
+            .await
     }
 
     /// `teardown_path` processes a teardown message by tearing down any
     /// related routes, returning a slice of next-hop candidates that the
     /// teardown must be forwarded to.
     async fn teardown_path(
+        &self,
         from: Port,
         path_key: VerificationKey,
         path_id: SnekPathId,
-        snek: &SnekState,
     ) -> Vec<Port> {
-        let mut ascending_path = snek.ascending_path.write().await;
-        let mut descending_path = snek.descending_path.write().await;
-        let mut paths = snek.paths.write().await;
+        let mut ascending_path = self.ascending_path.write().await;
+        let mut descending_path = self.descending_path.write().await;
+        let mut paths = self.paths.write().await;
         if let Some(asc) = &*ascending_path {
             if asc.public_key == path_key && asc.path_id == path_id {
                 if from == 0 {
@@ -1516,39 +1327,31 @@ impl Router {
     }
 
     async fn send_teardown_for_existing_path(
+        &self,
         from: Port,
         path_key: VerificationKey,
         path_id: SnekPathId,
-        switch: &SwitchState,
-        tree: &TreeState,
-        snek: &SnekState,
     ) {
-        let frame = Self::get_teardown(path_key, path_id, switch, tree).await;
-        for next_hop in Self::teardown_path(from, path_key, path_id, snek).await {
-            let peer = Self::get_peer_on_port(next_hop, switch).await.unwrap();
-            Self::send(Frame::SnekTeardown(frame.clone()), peer, switch).await;
+        let frame = self.get_teardown(path_key, path_id).await;
+        for next_hop in self.teardown_path(from, path_key, path_id).await {
+            let peer = self.get_peer_on_port(next_hop).await.unwrap();
+            self.send(Frame::SnekTeardown(frame.clone()), peer).await;
         }
     }
     async fn send_teardown_for_rejected_path(
+        &self,
         path_key: VerificationKey,
         path_id: SnekPathId,
         via: Port,
-        switch: &SwitchState,
-        tree: &TreeState,
     ) {
-        let frame = Self::get_teardown(path_key, path_id, switch, tree).await;
-        let peer = Self::get_peer_on_port(via, switch).await.unwrap();
-        Self::send(Frame::SnekTeardown(frame), peer, switch).await;
+        let frame = self.get_teardown(path_key, path_id).await;
+        let peer = self.get_peer_on_port(via).await.unwrap();
+        self.send(Frame::SnekTeardown(frame), peer).await;
     }
 
-    async fn get_teardown(
-        path_key: VerificationKey,
-        path_id: SnekPathId,
-        switch: &SwitchState,
-        tree: &TreeState,
-    ) -> SnekTeardown {
+    async fn get_teardown(&self, path_key: VerificationKey, path_id: SnekPathId) -> SnekTeardown {
         SnekTeardown {
-            root: Self::current_root(switch, tree).await,
+            root: self.current_root().await,
             destination_key: path_key,
             path_id,
         }

@@ -48,8 +48,10 @@ impl TreeAnnouncement {
     }
     pub(crate) fn peer_coords(&self) -> Coordinates {
         let mut coordinates = Coordinates::default();
-        for i in 0..self.signatures.len()-1 {
-            coordinates.coordinates.push(self.signatures.get(i).unwrap().destination_port);
+        for i in 0..self.signatures.len() - 1 {
+            coordinates
+                .coordinates
+                .push(self.signatures.get(i).unwrap().destination_port);
         }
         coordinates
     }

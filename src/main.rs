@@ -1,5 +1,5 @@
 use crate::frames::{Frame, TreeAnnouncement};
-use crate::router::{Event, Router, VerificationKey};
+use crate::router::{Router, VerificationKey};
 use crate::tree::{Root, RootAnnouncementSignature};
 use crate::wire_frame::PineconeCodec;
 use env_logger::WriteStyle;
@@ -40,15 +40,11 @@ async fn main() {
             let (upload_sender, upload_receiver) = channel(100);
             let (download_sender, download_receiver) = channel(100);
             let router = Router::new(public_key0, download_sender, upload_receiver);
-            let handle = router.spawn();
-            upload_sender
-                .send(Event::AddPeer {
-                    key: public_key1,
-                    socket: Framed::new(socket, PineconeCodec),
-                })
-                .await
-                .unwrap();
-            let router = handle.await.unwrap();
+            let handle = router.start().await;
+            router
+                .add_peer(public_key1, Framed::new(socket, PineconeCodec))
+                .await;
+            handle.await;
         }
         "1" => {
             info!("Connecting to 127.0.0.1:8080");
@@ -58,15 +54,11 @@ async fn main() {
             let (upload_sender, upload_receiver) = channel(100);
             let (download_sender, download_receiver) = channel(100);
             let router = Router::new(public_key1, download_sender, upload_receiver);
-            let handle = router.spawn();
-            upload_sender
-                .send(Event::AddPeer {
-                    key: public_key0,
-                    socket: Framed::new(socket, PineconeCodec),
-                })
-                .await
-                .unwrap();
-            let router = handle.await.unwrap();
+            let handle = router.start().await;
+            router
+                .add_peer(public_key0, Framed::new(socket, PineconeCodec))
+                .await;
+            handle.await;
         }
         _ => {}
     }
