@@ -737,6 +737,7 @@ impl Router {
             if !ascending.valid() {
                 // The ascending path entry has expired, so tear it down and then
                 // see if we can bootstrap again.
+                trace!("Ascending path expired. Tearing down and bootstrapping.");
                 self.send_teardown_for_existing_path(0, asc.public_key, asc.path_id)
                     .await;
                 will_bootstrap = can_bootstrap;
@@ -745,11 +746,13 @@ impl Router {
                 // The ascending node was set up with a different root key or sequence
                 // number. In this case, we will send another bootstrap to the remote
                 // side in order to hopefully replace the path with a new one.
+                trace!("Ascending path has different root. Bootstrapping.");
                 will_bootstrap = can_bootstrap;
             }
         } else {
             // We don't have an ascending node at all, so if we can, we'll try
             // bootstrapping to locate it.
+            trace!("No ascending path. Bootstrapping.");
             will_bootstrap = can_bootstrap;
         }
 
@@ -760,6 +763,7 @@ impl Router {
                 // The descending path has expired, so tear it down and then that should
                 // prompt the remote side into sending a new bootstrap to set up a new
                 // path, if they are still alive.
+                trace!("Tearing down expired descending path. Wait for bootstrap.");
                 self.send_teardown_for_existing_path(0, desc.public_key, desc.path_id)
                     .await;
             }
@@ -769,6 +773,7 @@ impl Router {
         // been activated by a setup ACK.
         for (index, path) in self.paths.read().await.clone() {
             if !path.active && path.last_seen.elapsed().unwrap() > Duration::from_secs(5) {
+                trace!("Tearing down old inactive path.");
                 self.send_teardown_for_existing_path(0, index.public_key, index.path_id)
                     .await;
             }
@@ -1114,7 +1119,7 @@ impl Router {
     /// these packets are handled even as we forward them, as setup packets should be
     /// processed by each node on the path.
     async fn handle_setup(&self, from: Port, rx: SnekSetup, next_hop: Port) {
-        let mut descending_path = self.ascending_path.write().await;
+        let mut descending_path = self.descending_path.write().await;
         let mut paths = self.paths.write().await;
         if self.current_root().await != rx.root {
             trace!("SnekSetup has different root. Responding with Teardown");
