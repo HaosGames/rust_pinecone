@@ -311,7 +311,7 @@ impl Router {
         *self.parent.read().await
     }
     async fn set_parent(&self, peer: VerificationKey) {
-        info!("Setting parent to {:?}", peer);
+        trace!("Setting parent to {:?}", peer);
         *self.parent.write().await = peer;
     }
     fn public_key(&self) -> VerificationKey {
@@ -622,7 +622,7 @@ impl Router {
     async fn send_tree_announcement(&self, to: VerificationKey, announcement: TreeAnnouncement) {
         let port = self.port(to).await.unwrap();
         let signed_announcement = announcement.append_signature(self.public_key(), port);
-        debug!("Sending tree announcement to port {}", port);
+        trace!("Sending tree announcement to port {}", port);
         self.send(Frame::TreeAnnouncement(signed_announcement), to)
             .await;
     }

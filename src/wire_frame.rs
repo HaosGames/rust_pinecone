@@ -107,13 +107,11 @@ impl Encoder<Frame> for PineconeCodec {
                     dst.put_u64(coord);
                 }
                 dst.put_slice(packet.payload.as_slice());
-                trace!("Encoded TreePacket");
             }
             Frame::SnekRouted(packet) => {
                 dst.put_slice(packet.destination_key.as_slice());
                 dst.put_slice(packet.source_key.as_slice());
                 dst.put_slice(packet.payload.as_slice());
-                trace!("Encoded SnekPacket");
             }
             Frame::TreeAnnouncement(packet) => {
                 dst.put_slice(packet.root.public_key.as_slice());
@@ -123,7 +121,6 @@ impl Encoder<Frame> for PineconeCodec {
                     dst.put_slice(sig.signing_public_key.as_slice());
                     dst.put_u64(sig.destination_port);
                 }
-                trace!("Encoded TreeAnnouncement");
             }
             Frame::SnekBootstrap(packet) => {
                 dst.put_slice(packet.destination_key.as_slice());
@@ -134,7 +131,6 @@ impl Encoder<Frame> for PineconeCodec {
                 dst.put_slice(packet.root.public_key.as_slice());
                 dst.put_u64(packet.root.sequence_number);
                 dst.put_u64(packet.path_id);
-                trace!("Encoded SnekBootstrap");
             }
             Frame::SnekBootstrapACK(packet) => {
                 dst.put_u16(packet.destination_coordinates.coordinates.len() as u16);
@@ -150,7 +146,6 @@ impl Encoder<Frame> for PineconeCodec {
                 dst.put_slice(packet.root.public_key.as_slice());
                 dst.put_u64(packet.root.sequence_number);
                 dst.put_u64(packet.path_id);
-                trace!("Encoded SnekBootstrapAck");
             }
             Frame::SnekSetup(packet) => {
                 dst.put_u16(packet.destination.coordinates.len() as u16);
@@ -162,21 +157,18 @@ impl Encoder<Frame> for PineconeCodec {
                 dst.put_slice(packet.root.public_key.as_slice());
                 dst.put_u64(packet.root.sequence_number);
                 dst.put_u64(packet.path_id);
-                trace!("Encoded SnekSetup");
             }
             Frame::SnekSetupACK(packet) => {
                 dst.put_slice(packet.destination_key.as_slice());
                 dst.put_slice(packet.root.public_key.as_slice());
                 dst.put_u64(packet.root.sequence_number);
                 dst.put_u64(packet.path_id);
-                trace!("Encoded SnekSetupAck");
             }
             Frame::SnekTeardown(packet) => {
                 dst.put_slice(packet.destination_key.as_slice());
                 dst.put_slice(packet.root.public_key.as_slice());
                 dst.put_u64(packet.root.sequence_number);
                 dst.put_u64(packet.path_id);
-                trace!("Encoded SnekTeardown");
             }
         }
         Ok(())
@@ -240,7 +232,6 @@ impl Decoder for PineconeCodec {
                         destination_port: sig_port
                     })
                 }
-                debug!("Decoded TreeAnnouncement");
                 return Ok(Some(Frame::TreeAnnouncement(TreeAnnouncement {
                     root: Root {
                         public_key: root_key,
