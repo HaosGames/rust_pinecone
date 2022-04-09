@@ -559,7 +559,7 @@ impl Router {
                     return;
                 }
                 // SelectNewParentWithWait
-                debug!("Announcement replayed current sequence");
+                trace!("Announcement replayed current sequence");
                 self.become_root().await;
                 self.reparent(true).await;
                 return;
@@ -739,8 +739,9 @@ impl Router {
                 // see if we can bootstrap again.
                 self.send_teardown_for_existing_path(0, asc.public_key, asc.path_id)
                     .await;
+                will_bootstrap = can_bootstrap;
             }
-            if ascending.root == root_announcement.root {
+            if ascending.root != root_announcement.root {
                 // The ascending node was set up with a different root key or sequence
                 // number. In this case, we will send another bootstrap to the remote
                 // side in order to hopefully replace the path with a new one.
