@@ -1302,6 +1302,7 @@ impl Router {
                     if desc.public_key == rx.source_key && rx.path_id != desc.path_id {
                         // We've received another bootstrap from our direct descending node.
                         // Send back an acknowledgement as this is OK.
+                        trace!("Received another SnekSetup from current descending node. Responding with SnekSetupAck.");
                         update = true;
                     } else if Self::dht_ordered(
                         &desc.public_key,
@@ -1310,25 +1311,33 @@ impl Router {
                     ) {
                         // The bootstrapping node is closer to us than our previous descending
                         // node was.
+                        trace!("Received SnekSetup from closer node. Accepting.");
                         update = true;
                     }
                 } else {
                     // Our descending entry has expired
                     if rx.source_key < Self::public_key(switch) {
                         // The bootstrapping key is less than ours so we'll acknowledge it.
+                        trace!("Descending entry expired. Accepting SnekSetup.");
                         update = true;
+                    } else {
+                        trace!("Descending entry expired but received SnekSetup isn't dht-ordered. Dropping.");
                     }
                 }
             } else if let None = *descending_path {
                 // We don't have a descending entry
                 if rx.source_key < Self::public_key(switch) {
                     // The bootstrapping key is less than ours so we'll acknowledge it.
+                    trace!("No descending entry. Accepting SnekSetup.");
                     update = true;
+                } else {
+                    trace!("No descending entry but received SnekSetup isn't dht-ordered. Dropping.")
                 }
             } else {
                 // The bootstrap conditions weren't met. This might just be because
                 // there's a node out there that hasn't converged to a closer node
                 // yet, so we'll just ignore the bootstrap.
+                trace!("Dropping non-valid SnekSetup.");
             }
             if !update {
                 Self::send_teardown_for_rejected_path(
@@ -1382,7 +1391,7 @@ impl Router {
         // can't do that then there's no point in keeping the path.
         let next_peer = Self::get_peer_on_port(next_hop, switch).await.unwrap();
         if next_peer == Self::public_key(switch) {
-            debug!("Next hop for {:?} is local, which shouldn't happen.", rx);
+            debug!("Can't forward SnekSetup. Tearing down path.");
             Self::send_teardown_for_rejected_path(rx.source_key, rx.path_id, from, switch, tree)
                 .await;
             return;
