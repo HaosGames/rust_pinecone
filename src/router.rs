@@ -1288,6 +1288,7 @@ impl Router {
                 let mut candidate = self.candidate.write().await;
                 if let Some(candidate_path) = &*candidate {
                     if entry == candidate_path {
+                        *self.ascending_path.write().await = Some(key.clone());
                         *candidate = None;
                     }
                 }
