@@ -1434,30 +1434,22 @@ impl Router {
         // Look up to see if we have a matching route. The route must be not active
         // (i.e. we haven't received a setup ACK for it yet) and must have arrived
         // from the port that the entry was populated with.
-        for (key, entry) in paths.clone() {
+        for (key, entry) in &mut *paths {
             if entry.active || key.public_key != rx.destination_key || key.path_id != rx.path_id {
                 continue;
             }
-            if from == 0 {}
-            if from == entry.destination {
-                if entry.source == 0 {
+            if from == entry.destination || from == 0 {
+                if entry.source != 0 {
+                    trace!("Forwarding SetupAck.");
                     let entry_source = Self::get_peer_on_port(entry.source, switch).await.unwrap();
                     Self::send(Frame::SnekSetupACK(rx.clone()), entry_source, switch).await;
                 }
-            }
-        }
-        for (key, entry) in paths.iter_mut() {
-            if entry.active || key.public_key != rx.destination_key || key.path_id != rx.path_id {
-                continue;
-            }
-            if from == 0 {}
-            if from == entry.destination {
-                if entry.source == 0 {
-                    entry.active = true;
-                    if let Some(candidate) = &snek.candidate.read().await.clone() {
-                        if entry == candidate {
-                            *snek.candidate.write().await = None;
-                        }
+                trace!("Activating Path {:?}", key);
+                entry.active = true;
+                let mut candidate = snek.candidate.write().await;
+                if let Some(candidate_path) = &*candidate {
+                    if entry == candidate_path {
+                        *candidate = None;
                     }
                 }
             }
