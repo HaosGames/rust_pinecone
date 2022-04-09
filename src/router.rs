@@ -351,6 +351,9 @@ impl Router {
         switch.public_key
     }
     async fn get_peer_on_port(port: Port, switch: &SwitchState) -> Option<VerificationKey> {
+        if port == 0 {
+            return Some(Self::public_key(switch));
+        }
         for (peer, peer_port) in &*switch.ports.read().await {
             if &port == peer_port {
                 return Some(peer.clone());
