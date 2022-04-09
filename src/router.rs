@@ -11,6 +11,7 @@ use log::{debug, info, trace};
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::io::Error;
+use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::net::TcpStream;
@@ -18,7 +19,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::error::Elapsed;
-use tokio::time::{interval, sleep};
+use tokio::time::{Instant, interval, interval_at, sleep};
 use tokio::{join, time};
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
@@ -33,6 +34,7 @@ pub(crate) const SNEK_EXPIRY_PERIOD: Duration = Duration::from_secs(60 * 60);
 pub(crate) const ANNOUNCEMENT_TIMEOUT: Duration = Duration::from_secs(45 * 60); //45 min
 pub(crate) const ANNOUNCEMENT_INTERVAL: Duration = Duration::from_secs(30 * 60); // 30 min
 pub(crate) const REPARENT_WAIT_TIME: Duration = Duration::from_secs(1); //   1 sec
+pub(crate) const MAINTAIN_SNEK_INTERVALL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct Router {
@@ -82,6 +84,39 @@ impl Router {
         let mut running = self.running.write().await;
         *running = true;
         drop(running);
+        let router = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval_at(Instant::now().add(ANNOUNCEMENT_INTERVAL), ANNOUNCEMENT_INTERVAL);
+            loop {
+                ticker.tick().await;
+                let running = router.running.read().await;
+                if *running == false {
+                    info!("Stopped router");
+                    break;
+                }
+                drop(running);
+
+                router.maintain_tree().await;
+            }
+        });
+
+        let router = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval_at(Instant::now().add(MAINTAIN_SNEK_INTERVALL), MAINTAIN_SNEK_INTERVALL);
+            loop {
+                ticker.tick().await;
+                let running = router.running.read().await;
+                if *running == false {
+                    info!("Stopped router");
+                    break;
+                }
+                drop(running);
+
+                router.maintain_snek().await;
+            }
+        });
+
+
         let router = self.clone();
         tokio::spawn(async move {
             let mut upload = router.upload.lock().await;
@@ -673,13 +708,10 @@ impl Router {
     async fn current_root(&self) -> Root {
         self.current_announcement().await.root
     }
-    async fn maintain_tree(&self, wait: bool) {
+    async fn maintain_tree(&self) {
         if self.i_am_root().await {
-            if self.announcement_timer_expired().await && wait {
-                self.reset_announcement_timer().await;
-                let announcement = self.new_tree_announcement().await;
-                self.send_tree_announcements_to_all(announcement).await;
-            }
+            let announcement = self.new_tree_announcement().await;
+            self.send_tree_announcements_to_all(announcement).await;
         }
         self.reparent(true).await;
     }
