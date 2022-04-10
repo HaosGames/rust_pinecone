@@ -461,7 +461,20 @@ impl Router {
                 }
             }
             Frame::SnekBootstrapACK(ack) => {
-                self.handle_bootstrap_ack(ack).await;
+                let next_hop = self.next_tree_hop(&ack, from).await;
+                match next_hop {
+                    Some(next_hop) => {
+                        if next_hop == *self.public_key {
+                            self.handle_bootstrap_ack(ack).await;
+                        } else {
+                            trace!("Forwarding SnekBootstrapAck.");
+                            self.send(Frame::SnekBootstrapACK(ack), next_hop).await;
+                        }
+                    }
+                    None => {
+                        trace!("No next hop for SnekBootstrapAck.");
+                    }
+                }
             }
             Frame::SnekSetup(setup) => {
                 let from_port = self.port(from).await.unwrap().clone();
