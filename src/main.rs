@@ -43,7 +43,7 @@ async fn main() {
         serde_json::to_string(&VerificationKeyBytes::from(verification_key)).unwrap()
     );
 
-    let listen_addr = args().nth(1).unwrap();
+    let listen_addr = args().nth(1).or(Some(String::from("127.0.0.1:0"))).unwrap();
     let listener = TcpListener::bind(listen_addr).await.unwrap();
     info!("Listening on {}", listener.local_addr().unwrap());
     let router1 = router.clone();
