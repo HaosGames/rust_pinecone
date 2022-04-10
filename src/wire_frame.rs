@@ -3,7 +3,7 @@ use crate::frames::{
     Frame, SnekBootstrap, SnekBootstrapAck, SnekPacket, SnekSetup, SnekSetupAck, SnekTeardown,
     TreeAnnouncement, TreePacket,
 };
-use crate::router::Public_key;
+use crate::router::PublicKey;
 use crate::tree::{Root, RootAnnouncementSignature};
 use bytes::{Buf, BufMut, BytesMut};
 use log::{debug, trace};
@@ -31,10 +31,10 @@ pub struct WireFrame {
     // Payload
     destination_len: u16,
     destination: Option<Coordinates>,
-    destination_key: Option<Public_key>,
+    destination_key: Option<PublicKey>,
     source_len: u16,
     source: Option<Coordinates>,
-    source_key: Option<Public_key>,
+    source_key: Option<PublicKey>,
     payload: Vec<u8>,
 }
 #[derive(Debug)]
@@ -174,8 +174,8 @@ impl Encoder<Frame> for PineconeCodec {
         Ok(())
     }
 }
-fn decode_key(src: &mut BytesMut) -> Public_key {
-    let mut key: Public_key = [0; 32];
+fn decode_key(src: &mut BytesMut) -> PublicKey {
+    let mut key: PublicKey = [0; 32];
     for i in 0..32 {
         key[i] = src.get_u8();
     }

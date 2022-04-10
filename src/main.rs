@@ -1,6 +1,6 @@
 use crate::connection::{DownloadConnection, UploadConnection};
 use crate::frames::{Frame, SnekPacket, TreeAnnouncement};
-use crate::router::{Public_key, Router};
+use crate::router::{PublicKey, Router};
 use crate::tree::Root;
 use crate::wire_frame::PineconeCodec;
 use ed25519_consensus::{SigningKey, VerificationKeyBytes};
