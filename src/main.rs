@@ -51,7 +51,7 @@ async fn main() {
                     DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
                 )
                 .await;
-            sleep(Duration::from_secs(8)).await;
+            sleep(Duration::from_secs(3)).await;
             upload_sender.send(
                 Frame::SnekRouted(SnekPacket {
                     destination_key: public_key1,
@@ -78,16 +78,14 @@ async fn main() {
                     DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
                 )
                 .await;
-            match download_receiver.recv().await {
-                Some(Frame::SnekRouted(packet)) => {
-                    debug!("Received {:?}", packet);
-                }
-                Some(frame) => {
-                    debug!("Should have received SnekPacket but got {:?}", frame);
-                }
-                None => {
-                }
-            }
+            sleep(Duration::from_secs(3)).await;
+            upload_sender.send(
+                Frame::SnekRouted(SnekPacket {
+                    destination_key: public_key0,
+                    source_key: public_key1,
+                    payload: vec![]
+                })
+            ).await.unwrap();
             handle.await;
         }
         _ => {}
