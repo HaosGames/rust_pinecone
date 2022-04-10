@@ -157,8 +157,13 @@ impl Router {
 
         let port = self.get_new_port().await;
         self.ports.write().await.insert(peer, port);
-        self.send_tree_announcement(peer, self.current_announcement().await)
-            .await;
+        self.send_tree_announcement(
+            peer,
+            self.current_announcement()
+                .await
+                .append_signature(self.public_key(), port),
+        )
+        .await;
 
         self.spawn_peer(peer).await;
     }
