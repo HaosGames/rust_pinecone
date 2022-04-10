@@ -35,7 +35,7 @@ async fn main() {
     let verification_key = signing_key.verification_key();
     let public_key = verification_key.to_bytes();
     let (upload_sender, upload_receiver) = channel(100);
-    let (download_sender, download_receiver) = channel(100);
+    let (download_sender, mut download_receiver) = channel(100);
     let router = Router::new(public_key, download_sender, upload_receiver);
     let handle = router.start().await;
     info!(
@@ -59,6 +59,26 @@ async fn main() {
                 )
                 .await
                 .unwrap();
+        }
+    });
+    tokio::spawn(async move {
+        loop {
+            match download_receiver.recv().await {
+                Some(frame) => match frame {
+                    Frame::SnekRouted(packet) => {
+                        println!("Received message from {:?}", packet.source_key);
+                        let message = String::from_utf8(packet.payload)
+                            .or::<()>(Ok(String::from("Message was not UTF-8")))
+                            .unwrap();
+                        println!("Message: {}", message);
+                    }
+                    _ => {}
+                },
+                None => {
+                    debug!("Local download channel broke.");
+                    break;
+                }
+            }
         }
     });
 
@@ -85,6 +105,23 @@ async fn main() {
                         DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
                     )
                     .await;
+            }
+            "2" => {
+                println!("Target key:");
+                let input = read_stdin_line().await;
+                let target_key: VerificationKeyBytes =
+                    serde_json::from_str(input.as_str()).unwrap();
+                println!("Message:");
+                let message = read_stdin_line().await;
+                let payload = message.as_bytes().to_vec();
+                upload_sender
+                    .send(Frame::SnekRouted(SnekPacket {
+                        destination_key: target_key.to_bytes(),
+                        source_key: public_key,
+                        payload,
+                    }))
+                    .await
+                    .unwrap();
             }
             _ => {}
         }
