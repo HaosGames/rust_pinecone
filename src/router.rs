@@ -168,8 +168,7 @@ impl Router {
         self.send_tree_announcement(
             peer,
             self.current_announcement()
-                .await
-                .append_signature(self.public_key(), port),
+                .await,
         )
         .await;
 
@@ -1413,11 +1412,9 @@ impl Router {
 mod test {
     use crate::connection::new_test_connection;
     use crate::frames::SnekPacket;
-    use crate::{Frame, Root, RootAnnouncementSignature, Router};
-    use std::time::Duration;
-    use tokio::join;
+    use crate::{Frame, Root, RootAnnouncementSignature, Router, TreeAnnouncement};
+    use std::time::{SystemTime};
     use tokio::sync::mpsc::channel;
-    use tokio::time::sleep;
 
     #[tokio::test]
     async fn two_routers_snek_routing() {
@@ -1451,12 +1448,12 @@ mod test {
     }
     #[tokio::test]
     async fn two_routers_connect() {
-        let pub1 = [0; 32];
-        let pub2 = [1; 32];
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
         let (r1_upload_sender, r1_upload_receiver) = channel(100);
         let (r1_download_sender, r1_download_receiver) = channel(100);
         let router1 = Router::new(pub1, r1_download_sender, r1_upload_receiver);
-        let (r1_u, r1_d, r2_u, mut r2_d) = new_test_connection();
+        let (r1_u, r1_d, mut r2_u, mut r2_d) = new_test_connection();
         let r1 = router1.start().await;
         router1.add_peer(pub2, r1_u, r1_d).await;
 
@@ -1469,14 +1466,42 @@ mod test {
                 }
             );
             assert_eq!(
+                ann.signatures.get(0).unwrap(),
+                &RootAnnouncementSignature {
+                    signing_public_key: pub1,
+                    destination_port: 1
+                }
+            );
+            assert_eq!(ann.signatures.get(1), None)
+        } else {
+            unreachable!("Should have received a TreeAnnouncement");
+        }
+        r2_u.send(Frame::TreeAnnouncement(TreeAnnouncement {
+            root: Root { public_key: pub2, sequence_number: 0 },
+            signatures: vec![RootAnnouncementSignature {
+                signing_public_key: pub2,
+                destination_port: 1
+            }],
+            receive_time: SystemTime::now(),
+            receive_order: 0
+        })).await;
+        if let Some(Ok(Frame::TreeAnnouncement(ann))) = r2_d.next().await {
+            assert_eq!(ann.root, Root { public_key: pub2, sequence_number: 0 });
+            assert_eq!(
+                ann.signatures.get(0).unwrap(),
+                &RootAnnouncementSignature {
+                    signing_public_key: pub2,
+                    destination_port: 1
+                }
+            );
+            assert_eq!(
                 ann.signatures.get(1).unwrap(),
                 &RootAnnouncementSignature {
                     signing_public_key: pub1,
                     destination_port: 1
                 }
             );
-        } else {
-            unreachable!("Should have received a TreeAnnouncement");
+            assert_eq!(ann.signatures.get(2), None);
         }
     }
 }
