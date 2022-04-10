@@ -417,14 +417,14 @@ impl Router {
             Frame::SnekBootstrap(bootstrap) => {
                 let next_hop = self.next_snek_hop(&bootstrap, true, false).await.unwrap();
                 if next_hop == *self.public_key {
-                    self.handle_snek_bootstrap(bootstrap).await;
+                    self.handle_bootstrap(bootstrap).await;
                 } else {
                     trace!("Forwarding SnekBootstrap.");
                     self.send(Frame::SnekBootstrap(bootstrap), next_hop).await;
                 }
             }
             Frame::SnekBootstrapACK(ack) => {
-                self.handle_snek_bootstrap_ack(ack).await;
+                self.handle_bootstrap_ack(ack).await;
             }
             Frame::SnekSetup(setup) => {
                 let from_port = self.port(from).await.unwrap().clone();
@@ -954,7 +954,7 @@ impl Router {
 
     /// `handle_bootstrap` is called in response to receiving a bootstrap packet.
     /// This function will send a bootstrap ACK back to the sender.
-    async fn handle_snek_bootstrap(&self, frame: SnekBootstrap) {
+    async fn handle_bootstrap(&self, frame: SnekBootstrap) {
         // Check that the root key and sequence number in the update match our
         // current root, otherwise we won't be able to route back to them using
         // tree routing anyway. If they don't match, silently drop the bootstrap.
@@ -983,11 +983,11 @@ impl Router {
         }
     }
 
-    /// `handle_snek_bootstrap_ack` is called in response to receiving a bootstrap ACK
+    /// `handle_bootstrap_ack` is called in response to receiving a bootstrap ACK
     /// packet. This function will work out whether the remote node is a suitable
     /// candidate to set up an outbound path to, and if so, will send path setup
     /// packets to the network.
-    async fn handle_snek_bootstrap_ack(&self, ack: SnekBootstrapAck) {
+    async fn handle_bootstrap_ack(&self, ack: SnekBootstrapAck) {
         let ascending_path = self.ascending_path.read().await;
         let mut paths = self.paths.write().await;
         let mut update = false;
@@ -1226,7 +1226,7 @@ impl Router {
                 destination: 0,
                 last_seen: SystemTime::now(),
                 root: rx.root.clone(),
-                active: false,
+                active: true,
             };
             paths.insert(index.clone(), entry.clone());
             *descending_path = Some(entry.clone());
@@ -1266,7 +1266,7 @@ impl Router {
             destination: next_hop, // node with higher of the two keys
             last_seen: SystemTime::now(),
             root: rx.root,
-            active: false,
+            active: true,
         };
         paths.insert(index, entry);
     }
