@@ -27,7 +27,6 @@ async fn main() {
         .format_timestamp(None)
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
-        // .filter_module("armaged", LevelFilter::Trace)
         .init();
     let public_key0 = [0; 32];
     let public_key1 = [1; 32];

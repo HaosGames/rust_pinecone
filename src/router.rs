@@ -190,26 +190,26 @@ impl Router {
     }
     async fn poll_peer(&self, peer: VerificationKey) -> Result<(), ()> {
         let sockets = self.download_connections.read().await;
-        if let Some(socket) = sockets.get(&peer) {
+        return if let Some(socket) = sockets.get(&peer) {
             if let Some(decode_result) = Self::poll_download_connection(socket).await {
                 match decode_result {
                     Ok(frame) => {
                         trace!("Received {:?}", frame);
                         self.handle_frame(frame, peer).await;
-                        return Ok(());
+                        Ok(())
                     }
                     Err(e) => {
                         debug!("Could not decode {:?}", e);
-                        return Ok(());
+                        Ok(())
                     }
                 }
             } else {
                 debug!("Stream of {:?} ended. Stopping peer", peer);
-                return Err(());
+                Err(())
             }
         } else {
             debug!("No stream for {:?}. Stopping peer", peer);
-            return Err(());
+            Err(())
         }
     }
     async fn poll_download_connection(
@@ -531,7 +531,7 @@ impl Router {
             trace!("Announcement came from parent");
             if frame.is_loop_of_child(&self.public_key()) {
                 // SelectNewParentWithWait
-                debug!("Announcement contains loop");
+                trace!("Announcement contains loop");
                 self.become_root().await;
                 self.reparent(true).await;
                 return;
@@ -671,7 +671,7 @@ impl Router {
                 }
             }
         }
-        match best_peer {
+        return match best_peer {
             Some(best_peer) => {
                 if best_peer == self.parent().await {
                     debug!("Current parent is the best available parent");
@@ -681,12 +681,12 @@ impl Router {
                 self.set_parent(best_peer).await;
                 self.send_tree_announcements_to_all(self.current_announcement().await)
                     .await;
-                return true;
+                true
             }
             None => {
-                debug!("I am root");
+                trace!("I am root");
                 self.become_root().await;
-                return false;
+                false
             }
         }
     }
@@ -738,7 +738,7 @@ impl Router {
             if !asc.valid() {
                 // The ascending path entry has expired, so tear it down and then
                 // see if we can bootstrap again.
-                trace!("Ascending path expired. Tearing down and bootstrapping.");
+                trace!("Ascending path expired. Tearing down and potentially bootstrapping.");
                 self.send_teardown_for_existing_path(0, asc.index.public_key, asc.index.path_id)
                     .await;
                 will_bootstrap = can_bootstrap;
@@ -747,14 +747,18 @@ impl Router {
                 // The ascending node was set up with a different root key or sequence
                 // number. In this case, we will send another bootstrap to the remote
                 // side in order to hopefully replace the path with a new one.
-                trace!("Ascending path has different root. Bootstrapping.");
                 will_bootstrap = can_bootstrap;
+                if will_bootstrap {
+                    trace!("Ascending path has different root. Bootstrapping.");
+                }
             }
         } else {
             // We don't have an ascending node at all, so if we can, we'll try
             // bootstrapping to locate it.
-            trace!("No ascending path. Bootstrapping.");
             will_bootstrap = can_bootstrap;
+            if will_bootstrap {
+                trace!("No ascending path. Bootstrapping.");
+            }
         }
 
         // The descending node is the node with the next lowest key.
@@ -804,8 +808,6 @@ impl Router {
         // change.
         let announcement = self.current_announcement().await;
         if let Some(asc) = &*self.ascending_path.read().await {
-            let paths = self.paths.read().await;
-            let asc_peer = self.get_peer_on_port(asc.source).await.unwrap();
             if asc.root == announcement.root {
                 trace!("Not bootstrapping because a valid ascending path is set");
                 return;
@@ -1405,6 +1407,7 @@ impl Router {
     }
 }
 
+#[allow(unused)]
 #[cfg(test)]
 mod test {
     use crate::connection::new_test_connection;
@@ -1422,6 +1425,12 @@ mod test {
 
     #[tokio::test]
     async fn two_routers_snek_routing() {
+        let _ = env_logger::builder()
+            .write_style(WriteStyle::Always)
+            .format_timestamp(None)
+            .filter_level(LevelFilter::Debug)
+            .filter_module("rust_pinecone", LevelFilter::Trace)
+            .init();
         let pub1 = [0; 32];
         let pub2 = [1; 32];
         let (r1_upload_sender, r1_upload_receiver) = channel(100);
@@ -1457,7 +1466,6 @@ mod test {
             .format_timestamp(None)
             .filter_level(LevelFilter::Debug)
             .filter_module("rust_pinecone", LevelFilter::Trace)
-            // .filter_module("armaged", LevelFilter::Trace)
             .init();
         let pub1 = [1; 32];
         let pub2 = [2; 32];
