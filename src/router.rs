@@ -6,23 +6,19 @@ use crate::snek::{SnekPath, SnekPathIndex, SnekRouted};
 use crate::tree::TreeRouted;
 use crate::wait_timer::WaitTimer;
 use crate::{PineconeCodec, Root, TreeAnnouncement};
-use futures::SinkExt;
 use log::{debug, info, trace};
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
-use std::io::Error;
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::error::Elapsed;
 use tokio::time::{Instant, interval, interval_at, sleep};
 use tokio::{join, time};
-use tokio_stream::StreamExt;
-use tokio_util::codec::Framed;
+use crate::connection::{DownloadConnection, UploadConnection};
 
 pub type Port = u64;
 pub type SequenceNumber = u64;
@@ -43,8 +39,8 @@ pub struct Router {
 
     pub(crate) upload: Arc<Mutex<Receiver<Frame>>>,
     pub(crate) download: Arc<Sender<Frame>>,
-    pub(crate) sockets:
-        Arc<RwLock<HashMap<VerificationKey, Mutex<Framed<TcpStream, PineconeCodec>>>>>,
+    upload_connections: Arc<RwLock<HashMap<VerificationKey, Mutex<UploadConnection>>>>,
+    download_connections: Arc<RwLock<HashMap<VerificationKey, Mutex<DownloadConnection>>>>,
     ports: Arc<RwLock<HashMap<VerificationKey, Port>>>,
 
     parent: Arc<RwLock<VerificationKey>>,
@@ -65,7 +61,8 @@ impl Router {
             upload: Arc::new(Mutex::new(upload)),
             public_key: Arc::new(key),
             download: Arc::new(download),
-            sockets: Default::default(),
+            upload_connections: Arc::new(Default::default()),
+            download_connections: Arc::new(Default::default()),
             ports: Default::default(),
             parent: Arc::new(RwLock::new(key)),
             announcements: Default::default(),
@@ -141,14 +138,21 @@ impl Router {
     pub async fn stop(&self) {
         *self.running.write().await = false;
     }
-    pub async fn add_peer(&self, peer: VerificationKey, socket: Framed<TcpStream, PineconeCodec>) {
-        let mut sockets = self.sockets.write().await;
-        if sockets.contains_key(&peer) {
+    pub async fn add_peer(&self, peer: VerificationKey, upload: UploadConnection, download: DownloadConnection) {
+        let mut upload_connections = self.upload_connections.write().await;
+        let mut download_connections = self.download_connections.write().await;
+        if download_connections.contains_key(&peer) {
             info!("Couldn't add {:?} because it already exists", peer);
             return;
         }
-        sockets.insert(peer, Mutex::new(socket));
-        drop(sockets);
+        if upload_connections.contains_key(&peer) {
+            info!("Couldn't add {:?} because it already exists", peer);
+            return;
+        }
+        upload_connections.insert(peer, Mutex::new(upload));
+        download_connections.insert(peer, Mutex::new(download));
+        drop(upload_connections);
+        drop(download_connections);
         info!("Added peer {:?}", peer);
 
         let port = self.get_new_port().await;
@@ -177,7 +181,7 @@ impl Router {
         });
     }
     async fn poll_peer(&self, peer: VerificationKey) -> Result<(), ()> {
-        let sockets = self.sockets.read().await;
+        let sockets = self.download_connections.read().await;
         if let Some(socket) = sockets.get(&peer) {
             if let Ok(result) = Self::poll_socket(socket).await {
                 if let Some(decode_result) = result {
@@ -206,7 +210,7 @@ impl Router {
         }
     }
     async fn poll_socket(
-        socket: &Mutex<Framed<TcpStream, PineconeCodec>>,
+        socket: &Mutex<DownloadConnection>,
     ) -> Result<Option<Result<Frame, std::io::Error>>, Elapsed> {
         let mut socket = socket.lock().await;
         let result = time::timeout(
@@ -370,12 +374,12 @@ impl Router {
         self.download.send(frame).await.unwrap();
     }
     async fn send(&self, frame: Frame, to: VerificationKey) {
-        let sockets = self.sockets.read().await;
-        let socket = sockets.get(&to);
+        let upload_connections = self.upload_connections.read().await;
+        let socket = upload_connections.get(&to);
         if let Some(socket) = socket {
             trace!("Sending {:?}", frame);
             let mut socket = socket.lock().await;
-            socket.send(frame).await.unwrap();
+            socket.send(frame).await;
         } else {
             debug!("No Socket for {:?}", to);
         }

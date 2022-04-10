@@ -8,7 +8,8 @@ use std::env::args;
 use std::time::SystemTime;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio_util::codec::Framed;
+use tokio_util::codec::{Framed, FramedRead, FramedWrite};
+use crate::connection::{DownloadConnection, UploadConnection};
 
 mod coordinates;
 mod frames;
@@ -17,6 +18,7 @@ mod snek;
 mod tree;
 mod wait_timer;
 mod wire_frame;
+mod connection;
 
 #[tokio::main]
 async fn main() {
@@ -35,6 +37,7 @@ async fn main() {
             let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
             info!("Listening on 127.0.0.1:8080");
             let (socket, addr) = listener.accept().await.unwrap();
+            let (reader, writer) = socket.into_split();
             info!("New Client: {:?}", addr);
 
             let (upload_sender, upload_receiver) = channel(100);
@@ -42,13 +45,15 @@ async fn main() {
             let router = Router::new(public_key0, download_sender, upload_receiver);
             let handle = router.start().await;
             router
-                .add_peer(public_key1, Framed::new(socket, PineconeCodec))
+                .add_peer(public_key1, UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
+                          DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)))
                 .await;
             handle.await;
         }
         "1" => {
             info!("Connecting to 127.0.0.1:8080");
             let socket = TcpStream::connect("127.0.0.1:8080").await.unwrap();
+            let (reader, writer) = socket.into_split();
             info!("Connected to 127.0.0.1:8080");
 
             let (upload_sender, upload_receiver) = channel(100);
@@ -56,7 +61,8 @@ async fn main() {
             let router = Router::new(public_key1, download_sender, upload_receiver);
             let handle = router.start().await;
             router
-                .add_peer(public_key0, Framed::new(socket, PineconeCodec))
+                .add_peer(public_key0, UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
+                          DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)))
                 .await;
             handle.await;
         }
