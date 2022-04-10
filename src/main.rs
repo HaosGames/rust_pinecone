@@ -1,14 +1,15 @@
 use crate::connection::{DownloadConnection, UploadConnection};
-use crate::frames::{Frame, TreeAnnouncement};
+use crate::frames::{Frame, SnekPacket, TreeAnnouncement};
 use crate::router::{Router, VerificationKey};
 use crate::tree::{Root, RootAnnouncementSignature};
 use crate::wire_frame::PineconeCodec;
 use env_logger::WriteStyle;
 use log::{debug, info, trace, LevelFilter};
 use std::env::args;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::time::sleep;
 use tokio_util::codec::{Framed, FramedRead, FramedWrite};
 
 mod connection;
@@ -50,6 +51,14 @@ async fn main() {
                     DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
                 )
                 .await;
+            sleep(Duration::from_secs(8)).await;
+            upload_sender.send(
+                Frame::SnekRouted(SnekPacket {
+                    destination_key: public_key1,
+                    source_key: public_key0,
+                    payload: vec![]
+                })
+            ).await.unwrap();
             handle.await;
         }
         "1" => {
@@ -59,7 +68,7 @@ async fn main() {
             info!("Connected to 127.0.0.1:8080");
 
             let (upload_sender, upload_receiver) = channel(100);
-            let (download_sender, download_receiver) = channel(100);
+            let (download_sender, mut download_receiver) = channel(100);
             let router = Router::new(public_key1, download_sender, upload_receiver);
             let handle = router.start().await;
             router
@@ -69,6 +78,16 @@ async fn main() {
                     DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
                 )
                 .await;
+            match download_receiver.recv().await {
+                Some(Frame::SnekRouted(packet)) => {
+                    debug!("Received {:?}", packet);
+                }
+                Some(frame) => {
+                    debug!("Should have received SnekPacket but got {:?}", frame);
+                }
+                None => {
+                }
+            }
             handle.await;
         }
         _ => {}

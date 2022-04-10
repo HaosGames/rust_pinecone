@@ -407,6 +407,7 @@ impl Router {
                     self.send(Frame::SnekRouted(packet), peer).await;
                     return;
                 }
+                trace!("No next hop for SnekPacket.");
                 return;
             }
             Frame::TreeAnnouncement(announcement) => {
@@ -775,11 +776,15 @@ impl Router {
 
         // Clean up any paths that were installed more than 5 seconds ago but haven't
         // been activated by a setup ACK.
-        for (index, path) in self.paths.read().await.clone() {
+        for (index, path) in &*self.paths.read().await {
             if !path.active && path.last_seen.elapsed().unwrap() > Duration::from_secs(5) {
-                trace!("Tearing down old inactive path.");
-                self.send_teardown_for_existing_path(0, index.public_key, index.path_id)
-                    .await;
+                trace!("Tearing down old inactive path. {:?}", path);
+                let router = self.clone();
+                let index = index.clone();
+                tokio::spawn(async move {
+                    router.send_teardown_for_existing_path(0, index.public_key, index.path_id)
+                        .await;
+                });
             }
         }
 
@@ -1324,11 +1329,8 @@ impl Router {
         let mut paths = self.paths.write().await;
         if let Some(asc) = ascending_path.clone() {
             if asc.index.public_key == path_key && asc.index.path_id == path_id {
-                if from == 0 {
-                    // originated locally
-                }
-                if from == asc.destination {
-                    // from network
+                if from == asc.destination || from == 0 {
+                    trace!("Removing ascending path.");
                     paths.remove(&asc.index);
                     *ascending_path = None;
                     return vec![asc.destination];
@@ -1337,11 +1339,8 @@ impl Router {
         }
         if let Some(desc) = descending_path.clone() {
             if desc.index.public_key == path_key && desc.index.path_id == path_id {
-                if from == 0 {
-                    // originated locally
-                }
-                if from == desc.destination {
-                    // from network
+                if from == desc.destination || from == 0 {
+                    trace!("Removing descending path.");
                     paths.remove(&desc.index);
                     *descending_path = None;
                     return vec![desc.destination];
@@ -1352,21 +1351,25 @@ impl Router {
             if key.public_key == path_key && key.path_id == path_id {
                 if from == 0 {
                     // happens when we're tearing down an existing duplicate path
+                    trace!("Removing duplicate route from DHT.");
                     paths.remove(&key);
                     return vec![value.destination, value.source];
                 }
                 if from == value.source {
                     // from network, return the opposite direction
+                    trace!("Removing route from DHT.");
                     paths.remove(&key);
                     return vec![value.destination];
                 }
                 if from == value.destination {
                     // from network, return the opposite direction
+                    trace!("Removing route from DHT.");
                     paths.remove(&key);
                     return vec![value.source];
                 }
             }
         }
+        trace!("Not tearing down.");
         return vec![];
     }
 
@@ -1444,6 +1447,7 @@ mod test {
         let r2 = router2.start().await;
         router1.add_peer(pub2, r1_u, r1_d).await;
         router2.add_peer(pub1, r2_u, r2_d).await;
+        sleep(Duration::from_secs(5)).await;
         r1_upload_sender
             .send(Frame::SnekRouted(SnekPacket {
                 destination_key: pub2,
