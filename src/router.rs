@@ -1446,16 +1446,14 @@ mod test {
     use crate::connection::new_test_connection;
     use crate::coordinates::Coordinates;
     use crate::frames::{SnekBootstrapAck, SnekPacket, SnekSetupAck};
-    use crate::{
-        DownloadConnection, Frame, Root, Router, TreeAnnouncement,
-    };
+    use crate::tree::RootAnnouncementSignature;
+    use crate::{DownloadConnection, Frame, Root, Router, TreeAnnouncement};
     use env_logger::WriteStyle;
     use log::{trace, LevelFilter};
     use std::time::{Duration, SystemTime};
     use tokio::sync::mpsc::channel;
     use tokio::sync::mpsc::error::TryRecvError;
     use tokio::time::sleep;
-    use crate::tree::RootAnnouncementSignature;
 
     #[tokio::test]
     async fn two_routers_snek_routing() {

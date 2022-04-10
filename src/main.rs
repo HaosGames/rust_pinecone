@@ -8,7 +8,7 @@ use env_logger::WriteStyle;
 use log::{debug, info, trace, LevelFilter};
 use rand::thread_rng;
 use std::env::args;
-use tokio::io::{AsyncReadExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::channel;
 use tokio_util::codec::{FramedRead, FramedWrite};
@@ -71,17 +71,20 @@ async fn main() {
             "1" => {
                 println!("Public key of peer:");
                 let input = read_stdin_line().await;
-                let connect_key: VerificationKeyBytes = serde_json::from_str(input.as_str()).unwrap();
+                let connect_key: VerificationKeyBytes =
+                    serde_json::from_str(input.as_str()).unwrap();
                 println!("Address of peer:");
                 let connect_addr = read_stdin_line().await;
                 info!("Connecting to {}", connect_addr);
                 let socket = TcpStream::connect(connect_addr).await.unwrap();
                 let (reader, writer) = socket.into_split();
-                router.add_peer(
-                    connect_key.to_bytes(),
-                    UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
-                    DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
-                ).await;
+                router
+                    .add_peer(
+                        connect_key.to_bytes(),
+                        UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
+                        DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
+                    )
+                    .await;
             }
             _ => {}
         }
@@ -93,5 +96,7 @@ async fn read_stdin_line() -> String {
         let mut result = String::new();
         std::io::stdin().read_line(&mut result).unwrap();
         String::from(result.strip_suffix("\n").unwrap())
-    }).await.unwrap()
+    })
+    .await
+    .unwrap()
 }
