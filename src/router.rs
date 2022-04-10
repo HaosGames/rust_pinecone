@@ -1423,11 +1423,15 @@ impl Router {
         path_key: Public_key,
         path_id: SnekPathId,
     ) {
-        let frame = self.get_teardown(path_key, path_id).await;
-        for next_hop in self.teardown_path(from, path_key, path_id).await {
-            let peer = self.get_peer_on_port(next_hop).await.unwrap();
-            self.send(Frame::SnekTeardown(frame.clone()), peer).await;
-        }
+        let router = self.clone();
+        tokio::spawn(async move {
+            let frame = router.get_teardown(path_key, path_id).await;
+            for next_hop in router.teardown_path(from, path_key, path_id).await {
+                let peer = router.get_peer_on_port(next_hop).await.unwrap();
+                router.send(Frame::SnekTeardown(frame.clone()), peer).await;
+            }
+        });
+
     }
     async fn send_teardown_for_rejected_path(
         &self,
