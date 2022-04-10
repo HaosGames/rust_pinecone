@@ -48,8 +48,8 @@ pub struct Router {
     announcement_timer: Arc<RwLock<WaitTimer>>,
     reparent_timer: Arc<RwLock<Option<WaitTimer>>>,
 
-    ascending_path: Arc<RwLock<Option<SnekPathIndex>>>,
-    descending_path: Arc<RwLock<Option<SnekPathIndex>>>,
+    ascending_path: Arc<RwLock<Option<SnekPath>>>,
+    descending_path: Arc<RwLock<Option<SnekPath>>>,
     paths: Arc<RwLock<HashMap<SnekPathIndex, SnekPath>>>,
     candidate: Arc<RwLock<Option<SnekPath>>>,
 }
@@ -165,12 +165,8 @@ impl Router {
 
         let port = self.get_new_port().await;
         self.ports.write().await.insert(peer, port);
-        self.send_tree_announcement(
-            peer,
-            self.current_announcement()
-                .await,
-        )
-        .await;
+        self.send_tree_announcement(peer, self.current_announcement().await)
+            .await;
 
         self.spawn_peer(peer).await;
     }
@@ -260,9 +256,9 @@ impl Router {
         // peering then clear that path (although we can't send a teardown) and
         // then bootstrap again.
         if let Some(asc) = &self.ascending_path.read().await.clone() {
-            let ascending = self.paths.read().await.get(&asc).unwrap().clone();
-            if ascending.destination == port {
-                self.teardown_path(0, asc.public_key, asc.path_id).await;
+            if asc.destination == port {
+                self.teardown_path(0, asc.index.public_key, asc.index.path_id)
+                    .await;
                 bootstrap = true;
             }
         }
@@ -271,9 +267,9 @@ impl Router {
         // peering then clear that path (although we can't send a teardown) and
         // wait for another incoming setup.
         if let Some(desc) = &self.descending_path.read().await.clone() {
-            let descending = self.paths.read().await.get(&desc).unwrap().clone();
-            if descending.destination == port {
-                self.teardown_path(0, desc.public_key, desc.path_id).await;
+            if desc.destination == port {
+                self.teardown_path(0, desc.index.public_key, desc.index.path_id)
+                    .await;
             }
         }
 
@@ -738,17 +734,16 @@ impl Router {
         let mut will_bootstrap = false;
 
         // The ascending node is the node with the next highest key.
-        if let Some(asc) = &self.ascending_path.read().await.clone() {
-            let ascending = self.paths.read().await.get(&asc).unwrap().clone();
-            if !ascending.valid() {
+        if let Some(asc) = &*self.ascending_path.read().await {
+            if !asc.valid() {
                 // The ascending path entry has expired, so tear it down and then
                 // see if we can bootstrap again.
                 trace!("Ascending path expired. Tearing down and bootstrapping.");
-                self.send_teardown_for_existing_path(0, asc.public_key, asc.path_id)
+                self.send_teardown_for_existing_path(0, asc.index.public_key, asc.index.path_id)
                     .await;
                 will_bootstrap = can_bootstrap;
             }
-            if ascending.root != root_announcement.root {
+            if asc.root != root_announcement.root {
                 // The ascending node was set up with a different root key or sequence
                 // number. In this case, we will send another bootstrap to the remote
                 // side in order to hopefully replace the path with a new one.
@@ -763,14 +758,13 @@ impl Router {
         }
 
         // The descending node is the node with the next lowest key.
-        if let Some(desc) = &self.descending_path.read().await.clone() {
-            let descending_path = self.paths.read().await.get(&desc).unwrap().clone();
-            if !descending_path.valid() {
+        if let Some(desc) = &*self.descending_path.read().await {
+            if !desc.valid() {
                 // The descending path has expired, so tear it down and then that should
                 // prompt the remote side into sending a new bootstrap to set up a new
                 // path, if they are still alive.
                 trace!("Tearing down expired descending path. Wait for bootstrap.");
-                self.send_teardown_for_existing_path(0, desc.public_key, desc.path_id)
+                self.send_teardown_for_existing_path(0, desc.index.public_key, desc.index.path_id)
                     .await;
             }
         }
@@ -811,9 +805,8 @@ impl Router {
         let announcement = self.current_announcement().await;
         if let Some(asc) = &*self.ascending_path.read().await {
             let paths = self.paths.read().await;
-            let ascending = paths.get(&asc).unwrap();
-            let asc_peer = self.get_peer_on_port(ascending.source).await.unwrap();
-            if ascending.root == announcement.root {
+            let asc_peer = self.get_peer_on_port(asc.source).await.unwrap();
+            if asc.root == announcement.root {
                 trace!("Not bootstrapping because a valid ascending path is set");
                 return;
             }
@@ -1003,36 +996,32 @@ impl Router {
             // using tree routing would fail.
             trace!("Bootstrap-ack doesn't have same root. Dropping");
         } else if let Some(asc) = &*ascending_path {
-            if let Some(ascending) = paths.get(&asc) {
-                if ascending.valid() {
-                    // We already have an ascending entry and it hasn't expired yet.
-                    if ascending.origin == ack.source_key && ack.path_id != asc.path_id {
-                        // We've received another bootstrap ACK from our direct ascending node.
-                        // Just refresh the record and then send a new path setup message to
-                        // that node.
-                        trace!("Received updated bootstrap-ack from current ascending node. Sending new path setup.");
-                        update = true
-                    } else if Self::dht_ordered(
-                        &self.public_key(),
-                        &ack.source_key,
-                        &ascending.origin,
-                    ) {
-                        // We know about an ascending node already but it turns out that this
-                        // new node that we've received a bootstrap from is actually closer to
-                        // us than the previous node. We'll update our record to use the new
-                        // node instead and then send a new path setup message to it.
-                        trace!("Received bootstrap-ack from closer node. Updating ascending path and sending new path setup.");
-                        update = true;
-                    }
-                } else {
-                    // Ascending Path expired.
-                    if self.public_key() < ack.source_key {
-                        // We don't know about an ascending node and at the moment we don't know
-                        // any better candidates, so we'll accept a bootstrap ACK from a node with a
-                        // key higher than ours (so that it matches descending order).
-                        trace!("Current ascending path expired. Accepting bootstrap-ack from valid peer.");
-                        update = true;
-                    }
+            if asc.valid() {
+                // We already have an ascending entry and it hasn't expired yet.
+                if asc.origin == ack.source_key && ack.path_id != asc.index.path_id {
+                    // We've received another bootstrap ACK from our direct ascending node.
+                    // Just refresh the record and then send a new path setup message to
+                    // that node.
+                    trace!("Received updated bootstrap-ack from current ascending node. Sending new path setup.");
+                    update = true
+                } else if Self::dht_ordered(&self.public_key(), &ack.source_key, &asc.origin) {
+                    // We know about an ascending node already but it turns out that this
+                    // new node that we've received a bootstrap from is actually closer to
+                    // us than the previous node. We'll update our record to use the new
+                    // node instead and then send a new path setup message to it.
+                    trace!("Received bootstrap-ack from closer node. Updating ascending path and sending new path setup.");
+                    update = true;
+                }
+            } else {
+                // Ascending Path expired.
+                if self.public_key() < ack.source_key {
+                    // We don't know about an ascending node and at the moment we don't know
+                    // any better candidates, so we'll accept a bootstrap ACK from a node with a
+                    // key higher than ours (so that it matches descending order).
+                    trace!(
+                        "Current ascending path expired. Accepting bootstrap-ack from valid peer."
+                    );
+                    update = true;
                 }
             }
         } else if None == *ascending_path {
@@ -1088,6 +1077,7 @@ impl Router {
                     path_id: ack.path_id.clone(),
                 };
                 let entry = SnekPath {
+                    index: index.clone(),
                     origin: ack.source_key,
                     target: ack.source_key,
                     source: 0,
@@ -1102,7 +1092,7 @@ impl Router {
                 // routing loops.
                 for (dht_key, entry) in &paths.clone() {
                     if entry.source == 0
-                        && dht_key.public_key /*TODO dht_key.public_key OR entry.public_key which doesn't exist*/
+                        && dht_key.public_key
                         != ack.source_key
                     {
                         self.send_teardown_for_existing_path(
@@ -1116,6 +1106,8 @@ impl Router {
                 // Install the new route into the DHT.
                 trace!("Adding route {:?} to DHT", index);
                 paths.insert(index, entry.clone());
+                let mut entry = entry;
+                entry.active = true;
                 *self.candidate.write().await = Some(entry);
             }
         }
@@ -1162,16 +1154,15 @@ impl Router {
                 // The bootstrapping key should be less than ours but it isn't.
                 trace!("Key of bootstrapping node is not less then self. Dropping.");
             } else if let Some(desc) = &*descending_path {
-                let descending = paths.get(desc).unwrap();
-                if descending.valid() {
+                if desc.valid() {
                     // We already have a descending entry and it hasn't expired.
-                    if desc.public_key == rx.source_key && rx.path_id != desc.path_id {
+                    if desc.index.public_key == rx.source_key && rx.path_id != desc.index.path_id {
                         // We've received another bootstrap from our direct descending node.
                         // Send back an acknowledgement as this is OK.
                         trace!("Received another SnekSetup from current descending node. Responding with SnekSetupAck.");
                         update = true;
                     } else if Self::dht_ordered(
-                        &desc.public_key,
+                        &desc.index.public_key,
                         &rx.source_key,
                         &self.public_key(),
                     ) {
@@ -1215,12 +1206,13 @@ impl Router {
             if let Some(previous_path) = &descending_path.clone() {
                 self.send_teardown_for_existing_path(
                     0,
-                    previous_path.public_key,
-                    previous_path.path_id,
+                    previous_path.index.public_key,
+                    previous_path.index.path_id,
                 )
                 .await;
             }
             let entry = SnekPath {
+                index: index.clone(),
                 origin: rx.source_key,
                 target: rx.destination_key,
                 source: from.clone(),
@@ -1230,7 +1222,7 @@ impl Router {
                 active: false,
             };
             paths.insert(index.clone(), entry.clone());
-            *descending_path = Some(index.clone());
+            *descending_path = Some(entry.clone());
             // Send back a setup ACK to the remote side
             let setup_ack = SnekSetupAck {
                 root: rx.root.clone(),
@@ -1260,6 +1252,7 @@ impl Router {
         // Add a new routing table entry as we are intermediate to
         // the path.
         let entry = SnekPath {
+            index: index.clone(),
             origin: rx.source_key,
             target: rx.destination_key,
             source: from,          // node with lower of the two keys
@@ -1294,8 +1287,14 @@ impl Router {
                 let mut candidate = self.candidate.write().await;
                 if let Some(candidate_path) = &*candidate {
                     if entry == candidate_path {
-                        *self.ascending_path.write().await = Some(key.clone());
+                        trace!("Setting ascending path to {:?}", entry);
+                        *self.ascending_path.write().await = Some(entry.clone());
                         *candidate = None;
+                    } else {
+                        trace!("Path");
+                        trace!("{:?}", entry);
+                        trace!("doesn't fit candidate");
+                        trace!("{:?}", candidate_path);
                     }
                 }
             }
@@ -1321,31 +1320,29 @@ impl Router {
         let mut ascending_path = self.ascending_path.write().await;
         let mut descending_path = self.descending_path.write().await;
         let mut paths = self.paths.write().await;
-        if let Some(asc) = &*ascending_path {
-            if asc.public_key == path_key && asc.path_id == path_id {
+        if let Some(asc) = ascending_path.clone() {
+            if asc.index.public_key == path_key && asc.index.path_id == path_id {
                 if from == 0 {
                     // originated locally
                 }
-                let ascending = paths.get(asc).unwrap().clone();
-                if from == ascending.destination {
+                if from == asc.destination {
                     // from network
-                    paths.remove(asc);
+                    paths.remove(&asc.index);
                     *ascending_path = None;
-                    return vec![ascending.destination];
+                    return vec![asc.destination];
                 }
             }
         }
-        if let Some(desc) = &*descending_path {
-            if desc.public_key == path_key && desc.path_id == path_id {
+        if let Some(desc) = descending_path.clone() {
+            if desc.index.public_key == path_key && desc.index.path_id == path_id {
                 if from == 0 {
                     // originated locally
                 }
-                let descending = paths.get(desc).unwrap().clone();
-                if from == descending.destination {
+                if from == desc.destination {
                     // from network
-                    paths.remove(desc);
+                    paths.remove(&desc.index);
                     *descending_path = None;
-                    return vec![descending.destination];
+                    return vec![desc.destination];
                 }
             }
         }
@@ -1411,10 +1408,17 @@ impl Router {
 #[cfg(test)]
 mod test {
     use crate::connection::new_test_connection;
-    use crate::frames::SnekPacket;
-    use crate::{Frame, Root, RootAnnouncementSignature, Router, TreeAnnouncement};
-    use std::time::{SystemTime};
+    use crate::coordinates::Coordinates;
+    use crate::frames::{SnekBootstrapAck, SnekPacket, SnekSetupAck};
+    use crate::{
+        DownloadConnection, Frame, Root, RootAnnouncementSignature, Router, TreeAnnouncement,
+    };
+    use env_logger::WriteStyle;
+    use log::{trace, LevelFilter};
+    use std::time::{Duration, SystemTime};
     use tokio::sync::mpsc::channel;
+    use tokio::sync::mpsc::error::TryRecvError;
+    use tokio::time::sleep;
 
     #[tokio::test]
     async fn two_routers_snek_routing() {
@@ -1447,7 +1451,14 @@ mod test {
         }
     }
     #[tokio::test]
-    async fn two_routers_connect() {
+    async fn router_connects_as_non_root() {
+        let _ = env_logger::builder()
+            .write_style(WriteStyle::Always)
+            .format_timestamp(None)
+            .filter_level(LevelFilter::Debug)
+            .filter_module("rust_pinecone", LevelFilter::Trace)
+            // .filter_module("armaged", LevelFilter::Trace)
+            .init();
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (r1_upload_sender, r1_upload_receiver) = channel(100);
@@ -1476,24 +1487,34 @@ mod test {
                 assert_eq!(ann.signatures.get(1), None)
             }
             Some(result) => {
-                unreachable!("Should have received a TreeAnnouncement but got {:?}", result);
+                unreachable!("Should have received TreeAnnouncement but got {:?}", result);
             }
             None => {
-                unreachable!("Should have received a TreeAnnouncement but got nothing");
+                unreachable!("Should have received TreeAnnouncement but got nothing");
             }
         }
         r2_u.send(Frame::TreeAnnouncement(TreeAnnouncement {
-            root: Root { public_key: pub2, sequence_number: 0 },
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
             signatures: vec![RootAnnouncementSignature {
                 signing_public_key: pub2,
-                destination_port: 1
+                destination_port: 1,
             }],
             receive_time: SystemTime::now(),
-            receive_order: 0
-        })).await;
+            receive_order: 0,
+        }))
+        .await;
         match r2_d.next().await {
             Some(Ok(Frame::TreeAnnouncement(ann))) => {
-                assert_eq!(ann.root, Root { public_key: pub2, sequence_number: 0 });
+                assert_eq!(
+                    ann.root,
+                    Root {
+                        public_key: pub2,
+                        sequence_number: 0
+                    }
+                );
                 assert_eq!(
                     ann.signatures.get(0).unwrap(),
                     &RootAnnouncementSignature {
@@ -1511,10 +1532,80 @@ mod test {
                 assert_eq!(ann.signatures.get(2), None);
             }
             Some(result) => {
-                unreachable!("Should have received a TreeAnnouncement but got {:?}", result);
+                unreachable!("Should have received TreeAnnouncement but got {:?}", result);
             }
             None => {
-                unreachable!("Should have received a TreeAnnouncement but got nothing");
+                unreachable!("Should have received TreeAnnouncement but got nothing");
+            }
+        }
+        match r2_d.next().await {
+            Some(Ok(Frame::SnekBootstrap(packet))) => {
+                assert_eq!(
+                    packet.root,
+                    Root {
+                        public_key: pub2,
+                        sequence_number: 0
+                    }
+                );
+                assert_eq!(packet.destination_key, pub1);
+                assert_eq!(packet.source, Coordinates::new(vec![1]));
+                r2_u.send(Frame::SnekBootstrapACK(SnekBootstrapAck {
+                    destination_coordinates: Coordinates::new(vec![1]),
+                    destination_key: packet.destination_key,
+                    source_coordinates: Coordinates::default(),
+                    source_key: pub2,
+                    root: packet.root,
+                    path_id: packet.path_id,
+                }))
+                .await;
+            }
+            Some(result) => {
+                unreachable!("Should have received SnekBootstrap but got {:?}", result);
+            }
+            None => {
+                unreachable!("Should have received SnekBootstrap but got nothing");
+            }
+        }
+        match r2_d.next().await {
+            Some(Ok(Frame::SnekSetup(packet))) => {
+                assert_eq!(
+                    packet.root,
+                    Root {
+                        public_key: pub2,
+                        sequence_number: 0
+                    }
+                );
+                assert_eq!(packet.destination, Default::default());
+                assert_eq!(packet.destination_key, pub2);
+                assert_eq!(packet.source_key, pub1);
+                r2_u.send(Frame::SnekSetupACK(SnekSetupAck {
+                    root: packet.root,
+                    destination_key: packet.source_key,
+                    path_id: packet.path_id,
+                }))
+                .await;
+            }
+            Some(result) => {
+                unreachable!("Should have received SnekSetup but got {:?}", result);
+            }
+            None => {
+                unreachable!("Should have received SnekSetup but got nothing");
+            }
+        }
+        sleep(Duration::from_secs(1)).await;
+        assert!(router1.ascending_path.read().await.is_some());
+        match r2_d {
+            DownloadConnection::Test(mut stream) => match stream.try_recv() {
+                Ok(frame) => {
+                    unreachable!("Should have received nothing but got {:?}", frame);
+                }
+                Err(TryRecvError::Empty) => {}
+                _ => {
+                    panic!()
+                }
+            },
+            _ => {
+                panic!()
             }
         }
     }

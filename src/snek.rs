@@ -10,6 +10,7 @@ pub(crate) struct SnekPathIndex {
 }
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub(crate) struct SnekPath {
+    pub(crate) index: SnekPathIndex,
     pub(crate) origin: VerificationKey,
     pub(crate) target: VerificationKey,
     pub(crate) source: Port,
