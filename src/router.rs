@@ -38,8 +38,8 @@ pub struct Router {
 
     pub(crate) upload: Arc<Mutex<Receiver<Frame>>>,
     pub(crate) download: Arc<Sender<Frame>>,
-    upload_connections: Arc<RwLock<HashMap<Public_key, Mutex<UploadConnection>>>>,
-    download_connections: Arc<RwLock<HashMap<Public_key, Mutex<DownloadConnection>>>>,
+    upload_connections: Arc<RwLock<HashMap<Public_key, Arc<Mutex<UploadConnection>>>>>,
+    download_connections: Arc<RwLock<HashMap<Public_key, Arc<Mutex<DownloadConnection>>>>>,
     ports: Arc<RwLock<HashMap<Public_key, Port>>>,
 
     parent: Arc<RwLock<Public_key>>,
@@ -193,8 +193,8 @@ impl Router {
             info!("Couldn't add {:?} because it already exists", peer);
             return;
         }
-        upload_connections.insert(peer, Mutex::new(upload));
-        download_connections.insert(peer, Mutex::new(download));
+        upload_connections.insert(peer, Arc::new(Mutex::new(upload)));
+        download_connections.insert(peer, Arc::new(Mutex::new(download)));
         drop(upload_connections);
         drop(download_connections);
         info!("Added peer {:?}", peer);
@@ -226,7 +226,8 @@ impl Router {
     }
     async fn poll_peer(&self, peer: Public_key) -> Result<(), ()> {
         let sockets = self.download_connections.read().await;
-        return if let Some(socket) = sockets.get(&peer) {
+        return if let Some(socket) = sockets.get(&peer).cloned() {
+            drop(sockets);
             if let Some(decode_result) = Self::poll_download_connection(socket).await {
                 match decode_result {
                     Ok(frame) => {
@@ -249,7 +250,7 @@ impl Router {
         };
     }
     async fn poll_download_connection(
-        socket: &Mutex<DownloadConnection>,
+        socket: Arc<Mutex<DownloadConnection>>,
     ) -> Option<Result<Frame, std::io::Error>> {
         let mut socket = socket.lock().await;
         socket.next().await
@@ -340,7 +341,7 @@ impl Router {
     }
     async fn peers(&self) -> Vec<Public_key> {
         let mut peers = Vec::new();
-        for (peer, port) in &*self.ports.read().await {
+        for (peer, _port) in &*self.ports.read().await {
             peers.push(peer.clone());
         }
         peers
