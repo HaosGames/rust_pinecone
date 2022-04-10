@@ -1310,7 +1310,7 @@ impl Router {
             destination: next_hop, // node with higher of the two keys
             last_seen: SystemTime::now(),
             root: rx.root,
-            active: true,
+            active: false,
         };
         paths.insert(index, entry);
     }
