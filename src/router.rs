@@ -7,9 +7,10 @@ use crate::snek::{SnekPath, SnekPathIndex, SnekRouted};
 use crate::tree::TreeRouted;
 use crate::wait_timer::WaitTimer;
 use crate::{Root, TreeAnnouncement};
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
+use std::io::{Error, ErrorKind};
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -21,7 +22,7 @@ use tokio::time::{interval_at, sleep, Instant};
 pub type Port = u64;
 pub type SequenceNumber = u64;
 pub type SnekPathId = u64;
-pub type VerificationKey = [u8; 32];
+pub type Public_key = [u8; 32];
 
 pub(crate) const SNEK_EXPIRY_PERIOD: Duration = Duration::from_secs(60 * 60);
 
@@ -32,17 +33,17 @@ pub(crate) const MAINTAIN_SNEK_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct Router {
-    public_key: Arc<VerificationKey>,
+    public_key: Arc<Public_key>,
     running: Arc<RwLock<bool>>,
 
     pub(crate) upload: Arc<Mutex<Receiver<Frame>>>,
     pub(crate) download: Arc<Sender<Frame>>,
-    upload_connections: Arc<RwLock<HashMap<VerificationKey, Mutex<UploadConnection>>>>,
-    download_connections: Arc<RwLock<HashMap<VerificationKey, Mutex<DownloadConnection>>>>,
-    ports: Arc<RwLock<HashMap<VerificationKey, Port>>>,
+    upload_connections: Arc<RwLock<HashMap<Public_key, Mutex<UploadConnection>>>>,
+    download_connections: Arc<RwLock<HashMap<Public_key, Mutex<DownloadConnection>>>>,
+    ports: Arc<RwLock<HashMap<Public_key, Port>>>,
 
-    parent: Arc<RwLock<VerificationKey>>,
-    announcements: Arc<RwLock<HashMap<VerificationKey, TreeAnnouncement>>>,
+    parent: Arc<RwLock<Public_key>>,
+    announcements: Arc<RwLock<HashMap<Public_key, TreeAnnouncement>>>,
     sequence: Arc<RwLock<SequenceNumber>>,
     ordering: Arc<RwLock<SequenceNumber>>,
     announcement_timer: Arc<RwLock<WaitTimer>>,
@@ -54,7 +55,7 @@ pub struct Router {
     candidate: Arc<RwLock<Option<SnekPath>>>,
 }
 impl Router {
-    pub fn new(key: VerificationKey, download: Sender<Frame>, upload: Receiver<Frame>) -> Self {
+    pub fn new(key: Public_key, download: Sender<Frame>, upload: Receiver<Frame>) -> Self {
         Self {
             upload: Arc::new(Mutex::new(upload)),
             public_key: Arc::new(key),
@@ -141,9 +142,44 @@ impl Router {
     pub async fn stop(&self) {
         *self.running.write().await = false;
     }
+
+    /// This is for accepting incoming connections where the public_key is not known
+    /// before hand. It only succeeds if the peer that is being accepted is
+    /// sending a valid [`TreeAnnouncement`] as it's first frame. This is because only then
+    /// can the public_key be read out of the first announcement.
+    pub async fn accept_peer(
+        &self,
+        upload: UploadConnection,
+        mut download: DownloadConnection,
+    ) -> Result<(), Error> {
+        return match download.next().await {
+            Some(decoding_result) => match decoding_result {
+                Ok(Frame::TreeAnnouncement(ann)) => {
+                    if let Some(signature) = ann.signatures.last() {
+                        let public_key = signature.signing_public_key;
+                        self.add_peer(public_key, upload, download).await;
+                        self.handle_frame(Frame::TreeAnnouncement(ann), public_key)
+                            .await;
+                        return Ok(());
+                    } else {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "First tree announcement did not have a signature",
+                        ));
+                    }
+                }
+                Ok(_e) => Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "Did not receive tree announcement as first frame",
+                )),
+                Err(e) => Err(Error::new(ErrorKind::InvalidData, e)),
+            },
+            None => Err(Error::new(ErrorKind::BrokenPipe, "Stream ended")),
+        };
+    }
     pub async fn add_peer(
         &self,
-        peer: VerificationKey,
+        peer: Public_key,
         upload: UploadConnection,
         download: DownloadConnection,
     ) {
@@ -171,7 +207,7 @@ impl Router {
         self.spawn_peer(peer).await;
     }
 
-    async fn spawn_peer(&self, peer: VerificationKey) {
+    async fn spawn_peer(&self, peer: Public_key) {
         let router = self.clone();
         tokio::spawn(async move {
             loop {
@@ -188,7 +224,7 @@ impl Router {
             }
         });
     }
-    async fn poll_peer(&self, peer: VerificationKey) -> Result<(), ()> {
+    async fn poll_peer(&self, peer: Public_key) -> Result<(), ()> {
         let sockets = self.download_connections.read().await;
         return if let Some(socket) = sockets.get(&peer) {
             if let Some(decode_result) = Self::poll_download_connection(socket).await {
@@ -210,7 +246,7 @@ impl Router {
         } else {
             debug!("No stream for {:?}. Stopping peer", peer);
             Err(())
-        }
+        };
     }
     async fn poll_download_connection(
         socket: &Mutex<DownloadConnection>,
@@ -286,40 +322,40 @@ impl Router {
         }
     }
 
-    async fn tree_announcement(&self, of: VerificationKey) -> Option<TreeAnnouncement> {
+    async fn tree_announcement(&self, of: Public_key) -> Option<TreeAnnouncement> {
         self.announcements.read().await.get(&of).cloned()
     }
-    async fn set_tree_announcement(&self, of: VerificationKey, announcement: TreeAnnouncement) {
+    async fn set_tree_announcement(&self, of: Public_key, announcement: TreeAnnouncement) {
         self.announcements
             .write()
             .await
             .insert(of.clone(), announcement);
     }
-    async fn port(&self, of: VerificationKey) -> Option<Port> {
+    async fn port(&self, of: Public_key) -> Option<Port> {
         if *self.public_key == of {
             return Some(0);
         }
         let ports = self.ports.read().await;
         ports.get(&of).cloned()
     }
-    async fn peers(&self) -> Vec<VerificationKey> {
+    async fn peers(&self) -> Vec<Public_key> {
         let mut peers = Vec::new();
         for (peer, port) in &*self.ports.read().await {
             peers.push(peer.clone());
         }
         peers
     }
-    async fn parent(&self) -> VerificationKey {
+    async fn parent(&self) -> Public_key {
         *self.parent.read().await
     }
-    async fn set_parent(&self, peer: VerificationKey) {
+    async fn set_parent(&self, peer: Public_key) {
         trace!("Setting parent to {:?}", peer);
         *self.parent.write().await = peer;
     }
-    fn public_key(&self) -> VerificationKey {
+    fn public_key(&self) -> Public_key {
         *self.public_key
     }
-    async fn get_peer_on_port(&self, port: Port) -> Option<VerificationKey> {
+    async fn get_peer_on_port(&self, port: Port) -> Option<Public_key> {
         if port == 0 {
             return Some(self.public_key());
         }
@@ -371,7 +407,7 @@ impl Router {
     async fn send_to_local(&self, frame: Frame) {
         self.download.send(frame).await.unwrap();
     }
-    async fn send(&self, frame: Frame, to: VerificationKey) {
+    async fn send(&self, frame: Frame, to: Public_key) {
         let upload_connections = self.upload_connections.read().await;
         let socket = upload_connections.get(&to);
         if let Some(socket) = socket {
@@ -383,7 +419,7 @@ impl Router {
         }
     }
 
-    async fn handle_frame(&self, frame: Frame, from: VerificationKey) {
+    async fn handle_frame(&self, frame: Frame, from: Public_key) {
         match frame {
             Frame::TreeRouted(packet) => {
                 if let Some(peer) = self.next_tree_hop(&packet, from).await {
@@ -442,11 +478,7 @@ impl Router {
             }
         }
     }
-    async fn next_tree_hop(
-        &self,
-        frame: &impl TreeRouted,
-        from: VerificationKey,
-    ) -> Option<VerificationKey> {
+    async fn next_tree_hop(&self, frame: &impl TreeRouted, from: Public_key) -> Option<Public_key> {
         if frame.destination_coordinates() == self.coordinates().await {
             return Some(self.public_key());
         }
@@ -510,7 +542,7 @@ impl Router {
         }
         better_candidate
     }
-    async fn handle_tree_announcement(&self, mut frame: TreeAnnouncement, from: VerificationKey) {
+    async fn handle_tree_announcement(&self, mut frame: TreeAnnouncement, from: Public_key) {
         frame.receive_time = SystemTime::now();
         frame.receive_order = self.next_ordering().await;
 
@@ -622,7 +654,7 @@ impl Router {
                 .await;
         }
     }
-    async fn send_tree_announcement(&self, to: VerificationKey, announcement: TreeAnnouncement) {
+    async fn send_tree_announcement(&self, to: Public_key, announcement: TreeAnnouncement) {
         let port = self.port(to).await.unwrap();
         let signed_announcement = announcement.append_signature(self.public_key(), port);
         trace!("Sending tree announcement to port {}", port);
@@ -689,7 +721,7 @@ impl Router {
                 self.become_root().await;
                 false
             }
-        }
+        };
     }
     async fn become_root(&self) {
         trace!("Becoming root");
@@ -782,7 +814,8 @@ impl Router {
                 let router = self.clone();
                 let index = index.clone();
                 tokio::spawn(async move {
-                    router.send_teardown_for_existing_path(0, index.public_key, index.path_id)
+                    router
+                        .send_teardown_for_existing_path(0, index.public_key, index.path_id)
                         .await;
                 });
             }
@@ -842,7 +875,7 @@ impl Router {
         frame: &impl SnekRouted,
         bootstrap: bool,
         traffic: bool,
-    ) -> Option<VerificationKey> {
+    ) -> Option<Public_key> {
         let destination_key = frame.destination_key();
         // If the message isn't a bootstrap message and the destination is for our
         // own public key, handle the frame locally — it's basically loopback.
@@ -1098,10 +1131,7 @@ impl Router {
                 // that *aren't* the new ascending node lying around. This helps to avoid
                 // routing loops.
                 for (dht_key, entry) in &paths.clone() {
-                    if entry.source == 0
-                        && dht_key.public_key
-                        != ack.source_key
-                    {
+                    if entry.source == 0 && dht_key.public_key != ack.source_key {
                         self.send_teardown_for_existing_path(
                             0,
                             dht_key.public_key,
@@ -1321,7 +1351,7 @@ impl Router {
     async fn teardown_path(
         &self,
         from: Port,
-        path_key: VerificationKey,
+        path_key: Public_key,
         path_id: SnekPathId,
     ) -> Vec<Port> {
         let mut ascending_path = self.ascending_path.write().await;
@@ -1376,7 +1406,7 @@ impl Router {
     async fn send_teardown_for_existing_path(
         &self,
         from: Port,
-        path_key: VerificationKey,
+        path_key: Public_key,
         path_id: SnekPathId,
     ) {
         let frame = self.get_teardown(path_key, path_id).await;
@@ -1387,7 +1417,7 @@ impl Router {
     }
     async fn send_teardown_for_rejected_path(
         &self,
-        path_key: VerificationKey,
+        path_key: Public_key,
         path_id: SnekPathId,
         via: Port,
     ) {
@@ -1396,7 +1426,7 @@ impl Router {
         self.send(Frame::SnekTeardown(frame), peer).await;
     }
 
-    async fn get_teardown(&self, path_key: VerificationKey, path_id: SnekPathId) -> SnekTeardown {
+    async fn get_teardown(&self, path_key: Public_key, path_id: SnekPathId) -> SnekTeardown {
         SnekTeardown {
             root: self.current_root().await,
             destination_key: path_key,
@@ -1405,7 +1435,7 @@ impl Router {
     }
     /// `dht_ordered` returns true if the order of A, B and C is
     /// correct, where A < B < C without wrapping.
-    fn dht_ordered(a: &VerificationKey, b: &VerificationKey, c: &VerificationKey) -> bool {
+    fn dht_ordered(a: &Public_key, b: &Public_key, c: &Public_key) -> bool {
         a < b && b < c
     }
 }
@@ -1417,7 +1447,7 @@ mod test {
     use crate::coordinates::Coordinates;
     use crate::frames::{SnekBootstrapAck, SnekPacket, SnekSetupAck};
     use crate::{
-        DownloadConnection, Frame, Root, RootAnnouncementSignature, Router, TreeAnnouncement,
+        DownloadConnection, Frame, Root, Router, TreeAnnouncement,
     };
     use env_logger::WriteStyle;
     use log::{trace, LevelFilter};
@@ -1425,6 +1455,7 @@ mod test {
     use tokio::sync::mpsc::channel;
     use tokio::sync::mpsc::error::TryRecvError;
     use tokio::time::sleep;
+    use crate::tree::RootAnnouncementSignature;
 
     #[tokio::test]
     async fn two_routers_snek_routing() {

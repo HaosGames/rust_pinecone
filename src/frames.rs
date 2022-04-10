@@ -1,5 +1,5 @@
 use crate::coordinates::Coordinates;
-use crate::router::{Port, SequenceNumber, SnekPathId, VerificationKey};
+use crate::router::{Port, Public_key, SequenceNumber, SnekPathId};
 use crate::tree::{Root, RootAnnouncementSignature};
 use std::fmt::{Display, Formatter};
 use std::time::SystemTime;
@@ -17,8 +17,8 @@ pub enum Frame {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekPacket {
-    pub(crate) destination_key: VerificationKey,
-    pub(crate) source_key: VerificationKey,
+    pub(crate) destination_key: Public_key,
+    pub(crate) source_key: Public_key,
     pub(crate) payload: Vec<u8>,
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -37,7 +37,7 @@ pub struct TreeAnnouncement {
 impl TreeAnnouncement {
     pub(crate) fn append_signature(
         &self,
-        public_key: VerificationKey,
+        public_key: Public_key,
         destination_port: Port,
     ) -> TreeAnnouncement {
         // let public_key = keypair.public();
@@ -91,7 +91,7 @@ impl TreeAnnouncement {
 
         true
     }*/
-    pub(crate) fn is_loop_of_child(&self, public_key: &VerificationKey) -> bool {
+    pub(crate) fn is_loop_of_child(&self, public_key: &Public_key) -> bool {
         for signature in &self.signatures {
             if &signature.signing_public_key == public_key {
                 return true;
@@ -125,16 +125,16 @@ impl TreeAnnouncement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekBootstrap {
     pub(crate) root: Root,
-    pub(crate) destination_key: VerificationKey,
+    pub(crate) destination_key: Public_key,
     pub(crate) source: Coordinates,
     pub(crate) path_id: SnekPathId,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekBootstrapAck {
     pub(crate) destination_coordinates: Coordinates,
-    pub(crate) destination_key: VerificationKey,
+    pub(crate) destination_key: Public_key,
     pub(crate) source_coordinates: Coordinates,
-    pub(crate) source_key: VerificationKey,
+    pub(crate) source_key: Public_key,
     pub(crate) root: Root,
     pub(crate) path_id: SnekPathId,
 }
@@ -142,20 +142,20 @@ pub struct SnekBootstrapAck {
 pub struct SnekSetup {
     pub(crate) root: Root,
     pub(crate) destination: Coordinates,
-    pub(crate) destination_key: VerificationKey,
-    pub(crate) source_key: VerificationKey,
+    pub(crate) destination_key: Public_key,
+    pub(crate) source_key: Public_key,
     pub(crate) path_id: SnekPathId,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekSetupAck {
     pub(crate) root: Root,
-    pub(crate) destination_key: VerificationKey,
+    pub(crate) destination_key: Public_key,
     pub(crate) path_id: SnekPathId,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekTeardown {
     pub(crate) root: Root,
-    pub(crate) destination_key: VerificationKey,
+    pub(crate) destination_key: Public_key,
     pub(crate) path_id: SnekPathId,
 }
 

@@ -1,12 +1,12 @@
 use crate::coordinates::Coordinates;
 use crate::frames::{SnekBootstrapAck, SnekSetup, TreePacket};
-use crate::router::{Port, SequenceNumber, VerificationKey};
+use crate::router::{Port, Public_key, SequenceNumber};
 use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct Root {
-    pub(crate) public_key: VerificationKey,
+    pub(crate) public_key: Public_key,
     pub(crate) sequence_number: SequenceNumber,
 }
 impl PartialOrd<Self> for Root {
@@ -37,7 +37,7 @@ impl Display for Root {
 }
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct RootAnnouncementSignature {
-    pub(crate) signing_public_key: VerificationKey,
+    pub(crate) signing_public_key: Public_key,
     pub(crate) destination_port: Port,
     //TODO
     // pub(crate) signature: Signature,
