@@ -1457,24 +1457,30 @@ mod test {
         let r1 = router1.start().await;
         router1.add_peer(pub2, r1_u, r1_d).await;
 
-        if let Some(Ok(Frame::TreeAnnouncement(ann))) = r2_d.next().await {
-            assert_eq!(
-                ann.root,
-                Root {
-                    public_key: pub1,
-                    sequence_number: 0
-                }
-            );
-            assert_eq!(
-                ann.signatures.get(0).unwrap(),
-                &RootAnnouncementSignature {
-                    signing_public_key: pub1,
-                    destination_port: 1
-                }
-            );
-            assert_eq!(ann.signatures.get(1), None)
-        } else {
-            unreachable!("Should have received a TreeAnnouncement");
+        match r2_d.next().await {
+            Some(Ok(Frame::TreeAnnouncement(ann))) => {
+                assert_eq!(
+                    ann.root,
+                    Root {
+                        public_key: pub1,
+                        sequence_number: 0
+                    }
+                );
+                assert_eq!(
+                    ann.signatures.get(0).unwrap(),
+                    &RootAnnouncementSignature {
+                        signing_public_key: pub1,
+                        destination_port: 1
+                    }
+                );
+                assert_eq!(ann.signatures.get(1), None)
+            }
+            Some(result) => {
+                unreachable!("Should have received a TreeAnnouncement but got {:?}", result);
+            }
+            None => {
+                unreachable!("Should have received a TreeAnnouncement but got nothing");
+            }
         }
         r2_u.send(Frame::TreeAnnouncement(TreeAnnouncement {
             root: Root { public_key: pub2, sequence_number: 0 },
@@ -1485,23 +1491,31 @@ mod test {
             receive_time: SystemTime::now(),
             receive_order: 0
         })).await;
-        if let Some(Ok(Frame::TreeAnnouncement(ann))) = r2_d.next().await {
-            assert_eq!(ann.root, Root { public_key: pub2, sequence_number: 0 });
-            assert_eq!(
-                ann.signatures.get(0).unwrap(),
-                &RootAnnouncementSignature {
-                    signing_public_key: pub2,
-                    destination_port: 1
-                }
-            );
-            assert_eq!(
-                ann.signatures.get(1).unwrap(),
-                &RootAnnouncementSignature {
-                    signing_public_key: pub1,
-                    destination_port: 1
-                }
-            );
-            assert_eq!(ann.signatures.get(2), None);
+        match r2_d.next().await {
+            Some(Ok(Frame::TreeAnnouncement(ann))) => {
+                assert_eq!(ann.root, Root { public_key: pub2, sequence_number: 0 });
+                assert_eq!(
+                    ann.signatures.get(0).unwrap(),
+                    &RootAnnouncementSignature {
+                        signing_public_key: pub2,
+                        destination_port: 1
+                    }
+                );
+                assert_eq!(
+                    ann.signatures.get(1).unwrap(),
+                    &RootAnnouncementSignature {
+                        signing_public_key: pub1,
+                        destination_port: 1
+                    }
+                );
+                assert_eq!(ann.signatures.get(2), None);
+            }
+            Some(result) => {
+                unreachable!("Should have received a TreeAnnouncement but got {:?}", result);
+            }
+            None => {
+                unreachable!("Should have received a TreeAnnouncement but got nothing");
+            }
         }
     }
 }
