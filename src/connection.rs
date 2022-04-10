@@ -1,34 +1,30 @@
-use std::io::Error;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio_util::codec::{FramedRead, FramedWrite};
 use crate::{Frame, PineconeCodec};
-use tokio_stream::StreamExt;
 use futures::SinkExt;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio_stream::StreamExt;
+use tokio_util::codec::{FramedRead, FramedWrite};
 
 pub enum DownloadConnection {
     Tcp(FramedRead<OwnedReadHalf, PineconeCodec>),
-    Test(Receiver<Frame>)
+    #[cfg(test)]
+    Test(Receiver<Frame>),
 }
 pub enum UploadConnection {
     Tcp(FramedWrite<OwnedWriteHalf, PineconeCodec>),
-    Test(Sender<Frame>)
+    #[cfg(test)]
+    Test(Sender<Frame>),
 }
 impl DownloadConnection {
     pub(crate) async fn next(&mut self) -> Option<Result<Frame, std::io::Error>> {
         return match self {
-            DownloadConnection::Tcp(stream) => {
-                stream.next().await
-            }
-            DownloadConnection::Test(stream) => {
-                match stream.recv().await {
-                    None => { None }
-                    Some(frame) => {
-                        Some(Ok(frame))
-                    }
-                }
-            }
-        }
+            DownloadConnection::Tcp(stream) => stream.next().await,
+            #[cfg(test)]
+            DownloadConnection::Test(stream) => match stream.recv().await {
+                None => None,
+                Some(frame) => Some(Ok(frame)),
+            },
+        };
     }
 }
 impl UploadConnection {
@@ -37,9 +33,26 @@ impl UploadConnection {
             UploadConnection::Tcp(sink) => {
                 sink.send(frame).await.unwrap();
             }
+            #[cfg(test)]
             UploadConnection::Test(sink) => {
                 sink.send(frame).await.unwrap();
             }
         }
     }
+}
+#[cfg(test)]
+pub(crate) fn new_test_connection() -> (
+    UploadConnection,
+    DownloadConnection,
+    UploadConnection,
+    DownloadConnection,
+) {
+    let (peer0_sender, peer1_receiver) = channel(10);
+    let (peer1_sender, peer0_receiver) = channel(10);
+    (
+        UploadConnection::Test(peer0_sender),
+        DownloadConnection::Test(peer0_receiver),
+        UploadConnection::Test(peer1_sender),
+        DownloadConnection::Test(peer1_receiver),
+    )
 }

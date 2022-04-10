@@ -1,3 +1,4 @@
+use crate::connection::{DownloadConnection, UploadConnection};
 use crate::frames::{Frame, TreeAnnouncement};
 use crate::router::{Router, VerificationKey};
 use crate::tree::{Root, RootAnnouncementSignature};
@@ -9,8 +10,8 @@ use std::time::SystemTime;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_util::codec::{Framed, FramedRead, FramedWrite};
-use crate::connection::{DownloadConnection, UploadConnection};
 
+mod connection;
 mod coordinates;
 mod frames;
 mod router;
@@ -18,7 +19,6 @@ mod snek;
 mod tree;
 mod wait_timer;
 mod wire_frame;
-mod connection;
 
 #[tokio::main]
 async fn main() {
@@ -45,8 +45,11 @@ async fn main() {
             let router = Router::new(public_key0, download_sender, upload_receiver);
             let handle = router.start().await;
             router
-                .add_peer(public_key1, UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
-                          DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)))
+                .add_peer(
+                    public_key1,
+                    UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
+                    DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
+                )
                 .await;
             handle.await;
         }
@@ -61,8 +64,11 @@ async fn main() {
             let router = Router::new(public_key1, download_sender, upload_receiver);
             let handle = router.start().await;
             router
-                .add_peer(public_key0, UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
-                          DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)))
+                .add_peer(
+                    public_key0,
+                    UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
+                    DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
+                )
                 .await;
             handle.await;
         }

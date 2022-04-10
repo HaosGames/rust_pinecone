@@ -1,3 +1,4 @@
+use crate::connection::{DownloadConnection, UploadConnection};
 use crate::coordinates::Coordinates;
 use crate::frames::{
     Frame, SnekBootstrap, SnekBootstrapAck, SnekSetup, SnekSetupAck, SnekTeardown,
@@ -5,7 +6,7 @@ use crate::frames::{
 use crate::snek::{SnekPath, SnekPathIndex, SnekRouted};
 use crate::tree::TreeRouted;
 use crate::wait_timer::WaitTimer;
-use crate::{PineconeCodec, Root, TreeAnnouncement};
+use crate::{Root, TreeAnnouncement};
 use log::{debug, info, trace};
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
@@ -15,10 +16,7 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
-use tokio::time::error::Elapsed;
-use tokio::time::{Instant, interval, interval_at, sleep};
-use tokio::{join, time};
-use crate::connection::{DownloadConnection, UploadConnection};
+use tokio::time::{interval_at, sleep, Instant};
 
 pub type Port = u64;
 pub type SequenceNumber = u64;
@@ -83,7 +81,10 @@ impl Router {
         drop(running);
         let router = self.clone();
         tokio::spawn(async move {
-            let mut ticker = interval_at(Instant::now().add(ANNOUNCEMENT_INTERVAL), ANNOUNCEMENT_INTERVAL);
+            let mut ticker = interval_at(
+                Instant::now().add(ANNOUNCEMENT_INTERVAL),
+                ANNOUNCEMENT_INTERVAL,
+            );
             loop {
                 ticker.tick().await;
                 let running = router.running.read().await;
@@ -99,7 +100,10 @@ impl Router {
 
         let router = self.clone();
         tokio::spawn(async move {
-            let mut ticker = interval_at(Instant::now().add(MAINTAIN_SNEK_INTERVAL), MAINTAIN_SNEK_INTERVAL);
+            let mut ticker = interval_at(
+                Instant::now().add(MAINTAIN_SNEK_INTERVAL),
+                MAINTAIN_SNEK_INTERVAL,
+            );
             loop {
                 ticker.tick().await;
                 let running = router.running.read().await;
@@ -112,7 +116,6 @@ impl Router {
                 router.maintain_snek().await;
             }
         });
-
 
         let router = self.clone();
         tokio::spawn(async move {
@@ -138,7 +141,12 @@ impl Router {
     pub async fn stop(&self) {
         *self.running.write().await = false;
     }
-    pub async fn add_peer(&self, peer: VerificationKey, upload: UploadConnection, download: DownloadConnection) {
+    pub async fn add_peer(
+        &self,
+        peer: VerificationKey,
+        upload: UploadConnection,
+        download: DownloadConnection,
+    ) {
         let mut upload_connections = self.upload_connections.write().await;
         let mut download_connections = self.download_connections.write().await;
         if download_connections.contains_key(&peer) {
@@ -1398,5 +1406,77 @@ impl Router {
     /// correct, where A < B < C without wrapping.
     fn dht_ordered(a: &VerificationKey, b: &VerificationKey, c: &VerificationKey) -> bool {
         a < b && b < c
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::connection::new_test_connection;
+    use crate::frames::SnekPacket;
+    use crate::{Frame, Root, RootAnnouncementSignature, Router};
+    use std::time::Duration;
+    use tokio::join;
+    use tokio::sync::mpsc::channel;
+    use tokio::time::sleep;
+
+    #[tokio::test]
+    async fn two_routers_snek_routing() {
+        let pub1 = [0; 32];
+        let pub2 = [1; 32];
+        let (r1_upload_sender, r1_upload_receiver) = channel(100);
+        let (r1_download_sender, r1_download_receiver) = channel(100);
+        let (r2_upload_sender, r2_upload_receiver) = channel(100);
+        let (r2_download_sender, mut r2_download_receiver) = channel(100);
+        let router1 = Router::new(pub1, r1_download_sender, r1_upload_receiver);
+        let router2 = Router::new(pub1, r2_download_sender, r2_upload_receiver);
+        let (r1_u, r1_d, r2_u, r2_d) = new_test_connection();
+        let r1 = router1.start().await;
+        let r2 = router2.start().await;
+        router1.add_peer(pub2, r1_u, r1_d).await;
+        router2.add_peer(pub1, r2_u, r2_d).await;
+        r1_upload_sender
+            .send(Frame::SnekRouted(SnekPacket {
+                destination_key: pub2,
+                source_key: pub1,
+                payload: vec![],
+            }))
+            .await
+            .unwrap();
+        if let Some(Frame::SnekRouted(packet)) = r2_download_receiver.recv().await {
+            assert_eq!(packet.source_key, pub1);
+            assert_eq!(packet.destination_key, pub2);
+        } else {
+            unreachable!("Should have received a SnekPacket");
+        }
+    }
+    #[tokio::test]
+    async fn two_routers_connect() {
+        let pub1 = [0; 32];
+        let pub2 = [1; 32];
+        let (r1_upload_sender, r1_upload_receiver) = channel(100);
+        let (r1_download_sender, r1_download_receiver) = channel(100);
+        let router1 = Router::new(pub1, r1_download_sender, r1_upload_receiver);
+        let (r1_u, r1_d, r2_u, mut r2_d) = new_test_connection();
+        let r1 = router1.start().await;
+        router1.add_peer(pub2, r1_u, r1_d).await;
+
+        if let Some(Ok(Frame::TreeAnnouncement(ann))) = r2_d.next().await {
+            assert_eq!(
+                ann.root,
+                Root {
+                    public_key: pub1,
+                    sequence_number: 0
+                }
+            );
+            assert_eq!(
+                ann.signatures.get(1).unwrap(),
+                &RootAnnouncementSignature {
+                    signing_public_key: pub1,
+                    destination_port: 1
+                }
+            );
+        } else {
+            unreachable!("Should have received a TreeAnnouncement");
+        }
     }
 }
