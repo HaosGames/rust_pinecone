@@ -183,42 +183,32 @@ impl Router {
     async fn poll_peer(&self, peer: VerificationKey) -> Result<(), ()> {
         let sockets = self.download_connections.read().await;
         if let Some(socket) = sockets.get(&peer) {
-            if let Ok(result) = Self::poll_socket(socket).await {
-                if let Some(decode_result) = result {
-                    match decode_result {
-                        Ok(frame) => {
-                            trace!("Received {:?}", frame);
-                            self.handle_frame(frame, peer).await;
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            debug!("Could not decode {:?}", e);
-                            return Ok(());
-                        }
+            if let Some(decode_result) = Self::poll_download_connection(socket).await {
+                match decode_result {
+                    Ok(frame) => {
+                        trace!("Received {:?}", frame);
+                        self.handle_frame(frame, peer).await;
+                        return Ok(());
                     }
-                } else {
-                    debug!("Stream of {:?} ended. Stopping peer", peer);
-                    return Err(());
+                    Err(e) => {
+                        debug!("Could not decode {:?}", e);
+                        return Ok(());
+                    }
                 }
             } else {
-                // Socket poll timeout exceeded
-                return Ok(());
+                debug!("Stream of {:?} ended. Stopping peer", peer);
+                return Err(());
             }
         } else {
             debug!("No stream for {:?}. Stopping peer", peer);
             return Err(());
         }
     }
-    async fn poll_socket(
+    async fn poll_download_connection(
         socket: &Mutex<DownloadConnection>,
-    ) -> Result<Option<Result<Frame, std::io::Error>>, Elapsed> {
+    ) -> Option<Result<Frame, std::io::Error>> {
         let mut socket = socket.lock().await;
-        let result = time::timeout(
-            Duration::from_millis(10),
-            async move { socket.next().await },
-        )
-        .await;
-        result
+        socket.next().await
     }
 
     async fn get_new_port(&self) -> Port {
