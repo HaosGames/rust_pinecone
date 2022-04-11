@@ -40,7 +40,7 @@ pub struct Router {
     pub(crate) download: Arc<Sender<Frame>>,
     upload_connections: Arc<RwLock<HashMap<PublicKey, Arc<Mutex<UploadConnection>>>>>,
     download_connections: Arc<RwLock<HashMap<PublicKey, Arc<Mutex<DownloadConnection>>>>>,
-    ports: Arc<RwLock<HashMap<PublicKey, Port>>>,
+    ports: Arc<RwLock<HashMap<Port, Option<PublicKey>>>>,
 
     parent: Arc<RwLock<PublicKey>>,
     announcements: Arc<RwLock<HashMap<PublicKey, TreeAnnouncement>>>,
@@ -147,25 +147,34 @@ impl Router {
     /// before hand. It only succeeds if the peer that is being accepted is
     /// sending a valid [`TreeAnnouncement`] as it's first frame. This is because only then
     /// can the public_key be read out of the first announcement.
-    pub async fn accept_peer(
+    pub async fn connect(
         &self,
-        upload: UploadConnection,
+        mut upload: UploadConnection,
         mut download: DownloadConnection,
     ) -> Result<(), Error> {
+        let port = self.get_new_port().await;
+        let announcement = self
+            .current_announcement()
+            .await
+            .append_signature(self.public_key(), port);
+        upload.send(Frame::TreeAnnouncement(announcement)).await;
         return match download.next().await {
             Some(decoding_result) => match decoding_result {
                 Ok(Frame::TreeAnnouncement(ann)) => {
-                    if let Some(signature) = ann.signatures.last() {
+                    return if let Some(signature) = ann.signatures.last() {
                         let public_key = signature.signing_public_key;
-                        self.add_peer(public_key, upload, download).await;
+                        let mut ports = self.ports.write().await;
+                        ports.insert(port, Some(public_key));
+                        drop(ports);
+                        self.add_peer(public_key, port, upload, download).await;
                         self.handle_frame(Frame::TreeAnnouncement(ann), public_key)
                             .await;
-                        return Ok(());
+                        Ok(())
                     } else {
-                        return Err(Error::new(
+                        Err(Error::new(
                             ErrorKind::InvalidData,
                             "First tree announcement did not have a signature",
-                        ));
+                        ))
                     }
                 }
                 Ok(_e) => Err(Error::new(
@@ -180,6 +189,7 @@ impl Router {
     pub async fn add_peer(
         &self,
         peer: PublicKey,
+        port: Port,
         upload: UploadConnection,
         download: DownloadConnection,
     ) {
@@ -199,14 +209,12 @@ impl Router {
         drop(download_connections);
         info!("Added peer {:?}", peer);
 
-        let port = self.get_new_port().await;
-        self.ports.write().await.insert(peer, port);
+        self.ports.write().await.insert(port, Some(peer));
         self.send_tree_announcement(peer, self.current_announcement().await)
             .await;
 
         self.spawn_peer(peer).await;
     }
-
     async fn spawn_peer(&self, peer: PublicKey) {
         let router = self.clone();
         tokio::spawn(async move {
@@ -258,19 +266,10 @@ impl Router {
 
     async fn get_new_port(&self) -> Port {
         for i in 1.. {
-            let mut used = false;
-            for port in self.ports.read().await.values() {
-                if port == &i {
-                    used = true;
-                }
-            }
-            match used {
-                true => {
-                    continue;
-                }
-                false => {
-                    return i;
-                }
+            let mut ports = self.ports.write().await;
+            if !ports.contains_key(&i) {
+                ports.insert(i, None);
+                return i;
             }
         }
         unreachable!("Reached port limit of {}", Port::MAX);
@@ -337,12 +336,27 @@ impl Router {
             return Some(0);
         }
         let ports = self.ports.read().await;
-        ports.get(&of).cloned()
+        for (port, peer) in &*ports {
+            match peer {
+                None => {}
+                Some(peer) => {
+                    if peer == &of {
+                        return Some(port.clone());
+                    }
+                }
+            }
+        }
+        return None;
     }
     async fn peers(&self) -> Vec<PublicKey> {
         let mut peers = Vec::new();
-        for (peer, _port) in &*self.ports.read().await {
-            peers.push(peer.clone());
+        for (port, peer) in &*self.ports.read().await {
+            match peer {
+                None => {}
+                Some(peer) => {
+                    peers.push(peer.clone());
+                }
+            }
         }
         peers
     }
@@ -360,12 +374,13 @@ impl Router {
         if port == 0 {
             return Some(self.public_key());
         }
-        for (peer, peer_port) in &*self.ports.read().await {
-            if &port == peer_port {
-                return Some(peer.clone());
-            }
-        }
-        None
+        return match self.ports.read().await.get(&port) {
+            None => None,
+            Some(peer) => match peer {
+                None => None,
+                Some(peer) => Some(peer.clone()),
+            },
+        };
     }
     async fn current_sequence(&self) -> SequenceNumber {
         *self.sequence.read().await
@@ -1446,7 +1461,6 @@ impl Router {
                 router.send(Frame::SnekTeardown(frame.clone()), peer).await;
             }
         });
-
     }
     async fn send_teardown_for_rejected_path(
         &self,
@@ -1489,43 +1503,6 @@ mod test {
     use tokio::time::sleep;
 
     #[tokio::test]
-    async fn two_routers_snek_routing() {
-        let _ = env_logger::builder()
-            .write_style(WriteStyle::Always)
-            .format_timestamp(None)
-            .filter_level(LevelFilter::Debug)
-            .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();
-        let pub1 = [0; 32];
-        let pub2 = [1; 32];
-        let (r1_upload_sender, r1_upload_receiver) = channel(100);
-        let (r1_download_sender, r1_download_receiver) = channel(100);
-        let (r2_upload_sender, r2_upload_receiver) = channel(100);
-        let (r2_download_sender, mut r2_download_receiver) = channel(100);
-        let router1 = Router::new(pub1, r1_download_sender, r1_upload_receiver);
-        let router2 = Router::new(pub1, r2_download_sender, r2_upload_receiver);
-        let (r1_u, r1_d, r2_u, r2_d) = new_test_connection();
-        let r1 = router1.start().await;
-        let r2 = router2.start().await;
-        router1.add_peer(pub2, r1_u, r1_d).await;
-        router2.add_peer(pub1, r2_u, r2_d).await;
-        sleep(Duration::from_secs(5)).await;
-        r1_upload_sender
-            .send(Frame::SnekRouted(SnekPacket {
-                destination_key: pub2,
-                source_key: pub1,
-                payload: vec![],
-            }))
-            .await
-            .unwrap();
-        if let Some(Frame::SnekRouted(packet)) = r2_download_receiver.recv().await {
-            assert_eq!(packet.source_key, pub1);
-            assert_eq!(packet.destination_key, pub2);
-        } else {
-            unreachable!("Should have received a SnekPacket");
-        }
-    }
-    #[tokio::test]
     async fn router_connects_as_non_root() {
         let _ = env_logger::builder()
             .write_style(WriteStyle::Always)
@@ -1540,7 +1517,7 @@ mod test {
         let router1 = Router::new(pub1, r1_download_sender, r1_upload_receiver);
         let (r1_u, r1_d, mut r2_u, mut r2_d) = new_test_connection();
         let r1 = router1.start().await;
-        router1.add_peer(pub2, r1_u, r1_d).await;
+        router1.add_peer(pub2, 1, r1_u, r1_d).await;
 
         match r2_d.next().await {
             Some(Ok(Frame::TreeAnnouncement(ann))) => {

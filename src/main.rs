@@ -8,6 +8,7 @@ use env_logger::WriteStyle;
 use log::{debug, info, trace, LevelFilter};
 use rand::thread_rng;
 use std::env::args;
+use std::io::Error;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::channel;
@@ -27,8 +28,8 @@ async fn main() {
     let _ = env_logger::builder()
         .write_style(WriteStyle::Always)
         .format_timestamp(None)
-        .filter_level(LevelFilter::Info)
-        // .filter_module("rust_pinecone", LevelFilter::Trace)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();
 
     let signing_key = SigningKey::new(thread_rng());
@@ -53,7 +54,7 @@ async fn main() {
             let (reader, writer) = socket.into_split();
             info!("New Client: {:?}", addr);
             router1
-                .accept_peer(
+                .connect(
                     UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
                     DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
                 )
@@ -89,22 +90,23 @@ async fn main() {
         // println!("3) Stop router");
         match read_stdin_line().await.as_str() {
             "1" => {
-                println!("Public key of peer:");
-                let input = read_stdin_line().await;
-                let connect_key: VerificationKeyBytes =
-                    serde_json::from_str(input.as_str()).unwrap();
                 println!("Address of peer:");
                 let connect_addr = read_stdin_line().await;
                 info!("Connecting to {}", connect_addr);
                 let socket = TcpStream::connect(connect_addr).await.unwrap();
                 let (reader, writer) = socket.into_split();
-                router
-                    .add_peer(
-                        connect_key.to_bytes(),
+                match router
+                    .connect(
                         UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
                         DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
                     )
-                    .await;
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(e) => {
+                        info!("Could not connect to peer: {:?}", e);
+                    }
+                }
             }
             "2" => {
                 println!("Target key:");
