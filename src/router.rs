@@ -409,6 +409,21 @@ impl Router {
         self.download.send(frame).await.unwrap();
     }
     async fn send(&self, frame: Frame, to: PublicKey) {
+        if to == self.public_key() {
+            match frame {
+                Frame::SnekRouted(_) => {
+                    self.send_to_local(frame).await;
+                    return;
+                }
+                Frame::TreeRouted(_) => {
+                    self.send_to_local(frame).await;
+                    return;
+                }
+                _ => {
+                    return;
+                }
+            }
+        }
         let upload_connections = self.upload_connections.read().await;
         let socket = upload_connections.get(&to);
         if let Some(socket) = socket {
