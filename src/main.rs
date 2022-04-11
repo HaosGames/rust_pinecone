@@ -27,8 +27,8 @@ async fn main() {
     let _ = env_logger::builder()
         .write_style(WriteStyle::Always)
         .format_timestamp(None)
-        .filter_level(LevelFilter::Debug)
-        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .filter_level(LevelFilter::Info)
+        // .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();
 
     let signing_key = SigningKey::new(thread_rng());
