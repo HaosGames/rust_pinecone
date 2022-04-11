@@ -86,7 +86,7 @@ async fn main() {
         println!("Available actions:");
         println!("1) Add peer");
         println!("2) Send message");
-        println!("3) Stop router");
+        // println!("3) Stop router");
         match read_stdin_line().await.as_str() {
             "1" => {
                 println!("Public key of peer:");
