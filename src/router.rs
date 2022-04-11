@@ -166,7 +166,7 @@ impl Router {
                         let mut ports = self.ports.write().await;
                         ports.insert(port, Some(public_key));
                         drop(ports);
-                        self.add_peer(public_key, port, upload, download).await;
+                        self.add_peer(public_key, port, upload, download, false).await;
                         self.handle_frame(Frame::TreeAnnouncement(ann), public_key)
                             .await;
                         Ok(())
@@ -186,12 +186,13 @@ impl Router {
             None => Err(Error::new(ErrorKind::BrokenPipe, "Stream ended")),
         };
     }
-    pub async fn add_peer(
+    async fn add_peer(
         &self,
         peer: PublicKey,
         port: Port,
         upload: UploadConnection,
         download: DownloadConnection,
+        send_first_announcement: bool,
     ) {
         let mut upload_connections = self.upload_connections.write().await;
         let mut download_connections = self.download_connections.write().await;
@@ -210,9 +211,10 @@ impl Router {
         info!("Added peer {:?}", peer);
 
         self.ports.write().await.insert(port, Some(peer));
-        self.send_tree_announcement(peer, self.current_announcement().await)
-            .await;
-
+        if send_first_announcement {
+            self.send_tree_announcement(peer, self.current_announcement().await)
+                .await;
+        }
         self.spawn_peer(peer).await;
     }
     async fn spawn_peer(&self, peer: PublicKey) {
@@ -1517,7 +1519,7 @@ mod test {
         let router1 = Router::new(pub1, r1_download_sender, r1_upload_receiver);
         let (r1_u, r1_d, mut r2_u, mut r2_d) = new_test_connection();
         let r1 = router1.start().await;
-        router1.add_peer(pub2, 1, r1_u, r1_d).await;
+        router1.add_peer(pub2, 1, r1_u, r1_d, true).await;
 
         match r2_d.next().await {
             Some(Ok(Frame::TreeAnnouncement(ann))) => {
