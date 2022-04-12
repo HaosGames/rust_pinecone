@@ -21,6 +21,7 @@ $ ./target/debug/rust_pinecone
 Available actions:
 1) Add peer
 2) Send message
+3) Stop router
 
 ```
 Optionally add a listen address as an argument. 
@@ -35,6 +36,7 @@ Add a peer
 Available actions:
 1) Add peer
 2) Send message
+3) Stop router
 1
 Address of peer:
 127.0.0.1:37301
@@ -44,6 +46,7 @@ Send a demo message to a peer
 Available actions:
 1) Add peer
 2) Send message
+3) Stop router
 2
 Target key:
 [131,221,229,133,52,62,223,119,250,217,34,60,39,203,108,100,35,178,32,49,78,138,249,102,204,127,102,132,223,207,90,201]

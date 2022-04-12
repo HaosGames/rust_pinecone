@@ -1,4 +1,5 @@
 use crate::coordinates::Coordinates;
+use crate::error::RouterError;
 use crate::frames::{
     Frame, SnekBootstrap, SnekBootstrapAck, SnekPacket, SnekSetup, SnekSetupAck, SnekTeardown,
     TreeAnnouncement, TreePacket,
@@ -40,12 +41,11 @@ pub struct WireFrame {
 #[derive(Debug)]
 pub struct PineconeCodec;
 impl Encoder<Frame> for PineconeCodec {
-    type Error = std::io::Error;
+    type Error = RouterError;
 
     fn encode(&mut self, item: Frame, dst: &mut BytesMut) -> Result<(), Self::Error> {
         if !dst.is_empty() {
-            return Err(Self::Error::new(
-                ErrorKind::Other,
+            return Err(Self::Error::EncodingError(
                 "Buffer to write to is not empty",
             ));
         }
@@ -183,7 +183,7 @@ fn decode_key(src: &mut BytesMut) -> PublicKey {
 }
 impl Decoder for PineconeCodec {
     type Item = Frame;
-    type Error = std::io::Error;
+    type Error = RouterError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         if src.is_empty() {
@@ -193,30 +193,21 @@ impl Decoder for PineconeCodec {
             return Ok(None);
         }
         if !src.starts_with(FRAME_MAGIC_BYTES.as_slice()) {
-            return Err(Self::Error::new(
-                ErrorKind::InvalidData,
-                "Magic Bytes not found",
-            ));
+            return Err(Self::Error::DecodingError("Magic Bytes not found"));
         }
         if src.len() < 10 {
             return Ok(None);
         }
         src.get_u32(); // Discard Magic Bytes
         if src.get_u8() != 0 {
-            return Err(Self::Error::new(
-                ErrorKind::Unsupported,
-                "Not frame version 0",
-            ));
+            return Err(Self::Error::DecodingError("Not frame version 0"));
         }
         let frame_type = src.get_u8();
         let extra1 = src.get_u8();
         let extra2 = src.get_u8();
         let len = src.get_u16();
         if src.len() < (len - 10) as usize {
-            return Err(Self::Error::new(
-                ErrorKind::Other,
-                "Did not receive enough bytes",
-            ));
+            return Err(Self::Error::DecodingError("Did not receive enough bytes"));
         }
         match frame_type {
             1  /*TreeAnnouncement*/ => {
@@ -362,7 +353,7 @@ impl Decoder for PineconeCodec {
                 })));
             }
             _ => {
-                return Err(Self::Error::new(ErrorKind::Other, "Not a supported frame type"));
+                return Err(Self::Error::DecodingError("Not a supported frame type"));
             }
         }
     }

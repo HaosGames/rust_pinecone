@@ -1,5 +1,6 @@
 use crate::connection::{DownloadConnection, UploadConnection};
 use crate::coordinates::Coordinates;
+use crate::error::RouterError;
 use crate::frames::{
     Frame, SnekBootstrap, SnekBootstrapAck, SnekSetup, SnekSetupAck, SnekTeardown,
 };
@@ -10,7 +11,6 @@ use crate::{Root, TreeAnnouncement};
 use log::{debug, info, trace, warn};
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind};
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -76,7 +76,7 @@ impl Router {
             running: Arc::new(RwLock::new(false)),
         }
     }
-    pub async fn start(&self) -> JoinHandle<Self> {
+    pub async fn start(&self) -> JoinHandle<Result<Self, RouterError>> {
         let mut running = self.running.write().await;
         *running = true;
         drop(running);
@@ -129,18 +129,22 @@ impl Router {
                 }
                 drop(running);
                 if let Some(frame) = upload.recv().await {
-                    router.handle_frame(frame, *router.public_key).await;
+                    router.handle_frame(frame, *router.public_key).await?;
                 } else {
                     debug!("Local event channel closed. Stopping router");
                     break;
                 }
             }
             drop(upload);
-            router
+            router.stop().await;
+            Ok(router)
         })
     }
     pub async fn stop(&self) {
         *self.running.write().await = false;
+        for peer in self.peers().await {
+            self.disconnect_peer(peer).await;
+        }
     }
 
     /// This is for accepting incoming connections where the public_key is not known
@@ -151,7 +155,7 @@ impl Router {
         &self,
         mut upload: UploadConnection,
         mut download: DownloadConnection,
-    ) -> Result<(), Error> {
+    ) -> Result<(), RouterError> {
         let port = self.get_new_port().await;
         let announcement = self
             .current_announcement()
@@ -166,24 +170,19 @@ impl Router {
                         let mut ports = self.ports.write().await;
                         ports.insert(port, Some(public_key));
                         drop(ports);
-                        self.add_peer(public_key, port, upload, download, false).await;
+                        self.add_peer(public_key, port, upload, download, false)
+                            .await;
                         self.handle_frame(Frame::TreeAnnouncement(ann), public_key)
                             .await;
                         Ok(())
                     } else {
-                        Err(Error::new(
-                            ErrorKind::InvalidData,
-                            "First tree announcement did not have a signature",
-                        ))
+                        Err(RouterError::MissingSignature)
                     }
                 }
-                Ok(_e) => Err(Error::new(
-                    ErrorKind::InvalidInput,
-                    "Did not receive tree announcement as first frame",
-                )),
-                Err(e) => Err(Error::new(ErrorKind::InvalidData, e)),
+                Ok(_e) => Err(RouterError::InvalidFrame),
+                Err(e) => Err(e.into()),
             },
-            None => Err(Error::new(ErrorKind::BrokenPipe, "Stream ended")),
+            None => Err(RouterError::ConnectionClosed),
         };
     }
     async fn add_peer(
@@ -232,9 +231,12 @@ impl Router {
                     Err(_) => break,
                 }
             }
+            router.disconnect_peer(peer).await;
+            router.download_connections.write().await.remove(&peer);
+            router.upload_connections.write().await.remove(&peer);
         });
     }
-    async fn poll_peer(&self, peer: PublicKey) -> Result<(), ()> {
+    async fn poll_peer(&self, peer: PublicKey) -> Result<(), RouterError> {
         let sockets = self.download_connections.read().await;
         return if let Some(socket) = sockets.get(&peer).cloned() {
             drop(sockets);
@@ -242,7 +244,7 @@ impl Router {
                 match decode_result {
                     Ok(frame) => {
                         trace!("Received {:?}", frame);
-                        self.handle_frame(frame, peer).await;
+                        self.handle_frame(frame, peer).await?;
                         Ok(())
                     }
                     Err(e) => {
@@ -252,16 +254,16 @@ impl Router {
                 }
             } else {
                 debug!("Stream of {:?} ended. Stopping peer", peer);
-                Err(())
+                Err(RouterError::ConnectionClosed)
             }
         } else {
             debug!("No stream for {:?}. Stopping peer", peer);
-            Err(())
+            Err(RouterError::ConnectionClosed)
         };
     }
     async fn poll_download_connection(
         socket: Arc<Mutex<DownloadConnection>>,
-    ) -> Option<Result<Frame, std::io::Error>> {
+    ) -> Option<Result<Frame, RouterError>> {
         let mut socket = socket.lock().await;
         socket.next().await
     }
@@ -276,39 +278,44 @@ impl Router {
         }
         unreachable!("Reached port limit of {}", Port::MAX);
     }
-    async fn disconnect_port(&self, port: Port) {
-        let peer = self.get_peer_on_port(port).await.unwrap();
+    async fn disconnect_peer(&self, peer: PublicKey) {
+        let port = self.port(peer).await;
         let mut bootstrap = false;
-        // Scan the local DHT table for any routes that transited this now-dead
-        // peering. If we find any then we need to send teardowns in the opposite
-        // direction, so that nodes further along the path will learn that the
-        // path was broken.
-        for (key, value) in self.paths.read().await.clone() {
-            if value.destination == port || value.source == port {
-                self.send_teardown_for_existing_path(port, key.public_key, key.path_id)
-                    .await;
+        if let Some(port) = port {
+            // Scan the local DHT table for any routes that transited this now-dead
+            // peering. If we find any then we need to send teardowns in the opposite
+            // direction, so that nodes further along the path will learn that the
+            // path was broken.
+            for (key, value) in self.paths.read().await.clone() {
+                if value.destination == port || value.source == port {
+                    self.send_teardown_for_existing_path(port, key.public_key, key.path_id)
+                        .await;
+                }
             }
-        }
 
-        // If the ascending path was also lost because it went via the now-dead
-        // peering then clear that path (although we can't send a teardown) and
-        // then bootstrap again.
-        if let Some(asc) = &self.ascending_path.read().await.clone() {
-            if asc.destination == port {
-                self.teardown_path(0, asc.index.public_key, asc.index.path_id)
-                    .await;
-                bootstrap = true;
+            // If the ascending path was also lost because it went via the now-dead
+            // peering then clear that path (although we can't send a teardown) and
+            // then bootstrap again.
+            if let Some(asc) = &self.ascending_path.read().await.clone() {
+                if asc.destination == port {
+                    self.teardown_path(0, asc.index.public_key, asc.index.path_id)
+                        .await;
+                    bootstrap = true;
+                }
             }
-        }
 
-        // If the descending path was lost because it went via the now-dead
-        // peering then clear that path (although we can't send a teardown) and
-        // wait for another incoming setup.
-        if let Some(desc) = &self.descending_path.read().await.clone() {
-            if desc.destination == port {
-                self.teardown_path(0, desc.index.public_key, desc.index.path_id)
-                    .await;
+            // If the descending path was lost because it went via the now-dead
+            // peering then clear that path (although we can't send a teardown) and
+            // wait for another incoming setup.
+            if let Some(desc) = &self.descending_path.read().await.clone() {
+                if desc.destination == port {
+                    self.teardown_path(0, desc.index.public_key, desc.index.path_id)
+                        .await;
+                }
             }
+            self.ports.write().await.remove(&port);
+        } else {
+            debug!("No port for peer that is being disconnected.");
         }
 
         // If the peer that died was our chosen tree parent, then we will need to
@@ -425,59 +432,60 @@ impl Router {
     async fn send_to_local(&self, frame: Frame) {
         self.download.send(frame).await.unwrap();
     }
-    async fn send(&self, frame: Frame, to: PublicKey) {
+    async fn send(&self, frame: Frame, to: PublicKey) -> Result<(), RouterError> {
         if to == self.public_key() {
-            match frame {
+            return match frame {
                 Frame::SnekRouted(_) => {
                     self.send_to_local(frame).await;
-                    return;
+                    Ok(())
                 }
                 Frame::TreeRouted(_) => {
                     self.send_to_local(frame).await;
-                    return;
+                    Ok(())
                 }
                 _ => {
-                    return;
+                    // Don't send protocol frames to self. Drop them.
+                    Ok(())
                 }
-            }
+            };
         }
         let upload_connections = self.upload_connections.read().await;
         let socket = upload_connections.get(&to);
-        if let Some(socket) = socket {
+        return if let Some(socket) = socket {
             trace!("Sending {:?}", frame);
             let mut socket = socket.lock().await;
-            socket.send(frame).await;
+            socket.send(frame).await
         } else {
+            // Ignore frames that are sent to unknown peer
             debug!("No Socket for {:?}", to);
-        }
+            Ok(())
+        };
     }
 
-    async fn handle_frame(&self, frame: Frame, from: PublicKey) {
+    async fn handle_frame(&self, frame: Frame, from: PublicKey) -> Result<(), RouterError> {
         match frame {
             Frame::TreeRouted(packet) => {
                 if let Some(peer) = self.next_tree_hop(&packet, from).await {
                     let peer = peer;
                     if peer == self.public_key() {
                         self.send_to_local(Frame::TreeRouted(packet)).await;
-                        return;
+                    } else {
+                        self.send(Frame::TreeRouted(packet), peer).await?;
                     }
-                    self.send(Frame::TreeRouted(packet), peer).await;
-                    return;
                 }
-                return;
             }
             Frame::SnekRouted(packet) => {
                 if let Some(peer) = self.next_snek_hop(&packet, false, true).await {
                     let peer = peer;
                     if peer == *self.public_key {
                         self.send_to_local(Frame::SnekRouted(packet)).await;
-                        return;
+                        return Ok(());
+                    } else {
+                        self.send(Frame::SnekRouted(packet), peer).await?;
                     }
-                    self.send(Frame::SnekRouted(packet), peer).await;
-                    return;
+                } else {
+                    trace!("No next hop for SnekPacket.");
                 }
-                trace!("No next hop for SnekPacket.");
-                return;
             }
             Frame::TreeAnnouncement(announcement) => {
                 self.handle_tree_announcement(announcement, from).await;
@@ -489,7 +497,7 @@ impl Router {
                     self.handle_bootstrap(bootstrap).await;
                 } else {
                     trace!("Forwarding SnekBootstrap.");
-                    self.send(Frame::SnekBootstrap(bootstrap), next_hop).await;
+                    self.send(Frame::SnekBootstrap(bootstrap), next_hop).await?;
                 }
             }
             Frame::SnekBootstrapACK(ack) => {
@@ -500,7 +508,7 @@ impl Router {
                             self.handle_bootstrap_ack(ack).await;
                         } else {
                             trace!("Forwarding SnekBootstrapAck.");
-                            self.send(Frame::SnekBootstrapACK(ack), next_hop).await;
+                            self.send(Frame::SnekBootstrapACK(ack), next_hop).await?;
                         }
                     }
                     None => {
@@ -523,6 +531,7 @@ impl Router {
                 self.handle_teardown(port, teardown).await;
             }
         }
+        Ok(())
     }
     async fn next_tree_hop(&self, frame: &impl TreeRouted, from: PublicKey) -> Option<PublicKey> {
         if frame.destination_coordinates() == self.coordinates().await {

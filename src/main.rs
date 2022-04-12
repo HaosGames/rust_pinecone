@@ -8,7 +8,6 @@ use env_logger::WriteStyle;
 use log::{debug, info, trace, LevelFilter};
 use rand::thread_rng;
 use std::env::args;
-use std::io::Error;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::channel;
@@ -16,6 +15,7 @@ use tokio_util::codec::{FramedRead, FramedWrite};
 
 mod connection;
 mod coordinates;
+mod error;
 mod frames;
 mod router;
 mod snek;
@@ -87,7 +87,7 @@ async fn main() {
         println!("Available actions:");
         println!("1) Add peer");
         println!("2) Send message");
-        // println!("3) Stop router");
+        println!("3) Stop router");
         match read_stdin_line().await.as_str() {
             "1" => {
                 println!("Address of peer:");
@@ -124,6 +124,11 @@ async fn main() {
                     }))
                     .await
                     .unwrap();
+            }
+            "3" => {
+                router.stop().await;
+                drop(upload_sender);
+                break;
             }
             _ => {}
         }

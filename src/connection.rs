@@ -1,3 +1,4 @@
+use crate::error::RouterError;
 use crate::{Frame, PineconeCodec};
 use futures::SinkExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -16,7 +17,7 @@ pub enum UploadConnection {
     Test(Sender<Frame>),
 }
 impl DownloadConnection {
-    pub(crate) async fn next(&mut self) -> Option<Result<Frame, std::io::Error>> {
+    pub(crate) async fn next(&mut self) -> Option<Result<Frame, RouterError>> {
         return match self {
             DownloadConnection::Tcp(stream) => stream.next().await,
             #[cfg(test)]
@@ -28,15 +29,11 @@ impl DownloadConnection {
     }
 }
 impl UploadConnection {
-    pub(crate) async fn send(&mut self, frame: Frame) {
+    pub(crate) async fn send(&mut self, frame: Frame) -> Result<(), RouterError> {
         match self {
-            UploadConnection::Tcp(sink) => {
-                sink.send(frame).await.unwrap();
-            }
+            UploadConnection::Tcp(sink) => Ok(sink.send(frame).await?),
             #[cfg(test)]
-            UploadConnection::Test(sink) => {
-                sink.send(frame).await.unwrap();
-            }
+            UploadConnection::Test(sink) => Ok(sink.send(frame).await?),
         }
     }
 }
