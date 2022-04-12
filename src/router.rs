@@ -90,13 +90,13 @@ impl Router {
                 ticker.tick().await;
                 let running = router.running.read().await;
                 if *running == false {
-                    info!("Stopped router");
                     break;
                 }
                 drop(running);
 
                 router.maintain_tree().await;
             }
+            trace!("Stopped maintaining the tree");
         });
 
         let router = self.clone();
@@ -109,13 +109,13 @@ impl Router {
                 ticker.tick().await;
                 let running = router.running.read().await;
                 if *running == false {
-                    info!("Stopped router");
                     break;
                 }
                 drop(running);
 
                 router.maintain_snek().await;
             }
+            trace!("Stopped maintaining the snek");
         });
 
         let router = self.clone();
@@ -124,7 +124,6 @@ impl Router {
             loop {
                 let running = router.running.read().await;
                 if *running == false {
-                    info!("Stopped router");
                     break;
                 }
                 drop(running);
@@ -135,6 +134,7 @@ impl Router {
                     break;
                 }
             }
+            trace!("Stopping the router");
             drop(upload);
             router.stop().await;
             Ok(router)
@@ -222,15 +222,18 @@ impl Router {
             loop {
                 let running = router.running.read().await;
                 if *running == false {
-                    info!("Stopped router. Stopping peer {:?}", peer);
                     break;
                 }
                 drop(running);
                 match router.poll_peer(peer).await {
                     Ok(_) => continue,
-                    Err(_) => break,
+                    Err(e) => {
+                        trace!("{}", e);
+                        break
+                    }
                 }
             }
+            debug!("Stopping peer {:?}", peer);
             router.disconnect_peer(peer).await;
             router.download_connections.write().await.remove(&peer);
             router.upload_connections.write().await.remove(&peer);
@@ -253,11 +256,9 @@ impl Router {
                     }
                 }
             } else {
-                debug!("Stream of {:?} ended. Stopping peer", peer);
                 Err(RouterError::ConnectionClosed)
             }
         } else {
-            debug!("No stream for {:?}. Stopping peer", peer);
             Err(RouterError::ConnectionClosed)
         };
     }
@@ -315,7 +316,7 @@ impl Router {
             }
             self.ports.write().await.remove(&port);
         } else {
-            debug!("No port for peer that is being disconnected.");
+            unreachable!("No port for peer that is being disconnected.");
         }
 
         // If the peer that died was our chosen tree parent, then we will need to
@@ -1454,7 +1455,6 @@ impl Router {
                 }
             }
         }
-        trace!("Not tearing down.");
         return vec![];
     }
 
