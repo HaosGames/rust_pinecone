@@ -87,7 +87,8 @@ async fn main() {
         println!("Available actions:");
         println!("1) Add peer");
         println!("2) Send message");
-        println!("3) Stop router");
+        println!("3) Disconnect peer");
+        println!("4) Stop router");
         match read_stdin_line().await.as_str() {
             "1" => {
                 println!("Address of peer:");
@@ -126,6 +127,13 @@ async fn main() {
                     .unwrap();
             }
             "3" => {
+                println!("Public Key:");
+                let input = read_stdin_line().await;
+                let target_key: VerificationKeyBytes =
+                    serde_json::from_str(input.as_str()).unwrap();
+                router.disconnect_peer(target_key.to_bytes()).await;
+            }
+            "4" => {
                 router.stop().await;
                 drop(upload_sender);
                 break;

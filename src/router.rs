@@ -235,8 +235,6 @@ impl Router {
             }
             debug!("Stopping peer {:?}", peer);
             router.disconnect_peer(peer).await;
-            router.download_connections.write().await.remove(&peer);
-            router.upload_connections.write().await.remove(&peer);
         });
     }
     async fn poll_peer(&self, peer: PublicKey) -> Result<(), RouterError> {
@@ -279,7 +277,7 @@ impl Router {
         }
         unreachable!("Reached port limit of {}", Port::MAX);
     }
-    async fn disconnect_peer(&self, peer: PublicKey) {
+    pub async fn disconnect_peer(&self, peer: PublicKey) {
         let port = self.port(peer).await;
         let mut bootstrap = false;
         if let Some(port) = port {
@@ -297,7 +295,7 @@ impl Router {
             // If the ascending path was also lost because it went via the now-dead
             // peering then clear that path (although we can't send a teardown) and
             // then bootstrap again.
-            if let Some(asc) = &self.ascending_path.read().await.clone() {
+            if let Some(asc) = self.ascending_path.read().await.clone() { //FIXME goes into deadlock here
                 if asc.destination == port {
                     self.teardown_path(0, asc.index.public_key, asc.index.path_id)
                         .await;
@@ -318,6 +316,9 @@ impl Router {
         } else {
             unreachable!("No port for peer that is being disconnected.");
         }
+        self.announcements.write().await.remove(&peer);
+        self.upload_connections.write().await.remove(&peer);
+        self.download_connections.write().await.remove(&peer);
 
         // If the peer that died was our chosen tree parent, then we will need to
         // select a new parent. If we successfully choose a new parent (as in, we
@@ -1186,7 +1187,7 @@ impl Router {
                 // we do want to make sure we don't have any old paths to other nodes
                 // that *aren't* the new ascending node lying around. This helps to avoid
                 // routing loops.
-                for (dht_key, entry) in &paths.clone() {
+                for (dht_key, entry) in &*paths {
                     if entry.source == 0 && dht_key.public_key != ack.source_key {
                         self.send_teardown_for_existing_path(
                             0,
