@@ -6,11 +6,13 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
+#[derive(Debug)]
 pub enum DownloadConnection {
     Tcp(FramedRead<OwnedReadHalf, PineconeCodec>),
     #[cfg(test)]
     Test(Receiver<Frame>),
 }
+#[derive(Debug)]
 pub enum UploadConnection {
     Tcp(FramedWrite<OwnedWriteHalf, PineconeCodec>),
     #[cfg(test)]

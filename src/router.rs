@@ -229,7 +229,7 @@ impl Router {
                     Ok(_) => continue,
                     Err(e) => {
                         trace!("{}", e);
-                        break
+                        break;
                     }
                 }
             }
@@ -295,7 +295,8 @@ impl Router {
             // If the ascending path was also lost because it went via the now-dead
             // peering then clear that path (although we can't send a teardown) and
             // then bootstrap again.
-            if let Some(asc) = self.ascending_path.read().await.clone() { //FIXME goes into deadlock here
+            //FIXME goes into deadlock here
+            if let Some(asc) = self.ascending_path.read().await.clone() {
                 if asc.destination == port {
                     self.teardown_path(0, asc.index.public_key, asc.index.path_id)
                         .await;
@@ -314,7 +315,7 @@ impl Router {
             }
             self.ports.write().await.remove(&port);
         } else {
-            unreachable!("No port for peer that is being disconnected.");
+            debug!("No port for peer that is being disconnected.");
         }
         self.announcements.write().await.remove(&peer);
         self.upload_connections.write().await.remove(&peer);
@@ -1506,22 +1507,230 @@ mod test {
     use crate::coordinates::Coordinates;
     use crate::frames::{SnekBootstrapAck, SnekPacket, SnekSetupAck};
     use crate::tree::RootAnnouncementSignature;
-    use crate::{DownloadConnection, Frame, Root, Router, TreeAnnouncement};
+    use crate::{DownloadConnection, Frame, PublicKey, Root, Router, TreeAnnouncement};
     use env_logger::WriteStyle;
     use log::{trace, LevelFilter};
     use std::time::{Duration, SystemTime};
     use tokio::sync::mpsc::channel;
     use tokio::sync::mpsc::error::TryRecvError;
     use tokio::time::sleep;
-
+    async fn get_test_router_with_peer(
+        router_key: PublicKey,
+        peer_key: PublicKey,
+        send_first_announcement: bool,
+    ) -> (Router, DownloadConnection) {
+        let (r1_upload_sender, r1_upload_receiver) = channel(100);
+        let (r1_download_sender, r1_download_receiver) = channel(100);
+        let router1 = Router::new(router_key, r1_download_sender, r1_upload_receiver);
+        let (r1_u, r1_d, mut r2_u, mut r2_d) = new_test_connection();
+        let r1 = router1.start().await;
+        router1
+            .add_peer(peer_key, 1, r1_u, r1_d, send_first_announcement)
+            .await;
+        (router1, r2_d)
+    }
     #[tokio::test]
-    async fn router_connects_as_non_root() {
-        let _ = env_logger::builder()
+    async fn send_first_announcement() {
+        /*let _ = env_logger::builder()
             .write_style(WriteStyle::Always)
             .format_timestamp(None)
             .filter_level(LevelFilter::Debug)
             .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();
+            .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (r, mut rd) = get_test_router_with_peer(pub1, pub2, true).await;
+        match rd.next().await {
+            Some(Ok(Frame::TreeAnnouncement(ann))) => {
+                assert_eq!(
+                    ann.root,
+                    Root {
+                        public_key: pub1,
+                        sequence_number: 0
+                    }
+                );
+                assert_eq!(
+                    ann.signatures.get(0).unwrap(),
+                    &RootAnnouncementSignature {
+                        signing_public_key: pub1,
+                        destination_port: 1
+                    }
+                );
+                assert_eq!(ann.signatures.get(1), None)
+            }
+            Some(result) => {
+                unreachable!("Should have received TreeAnnouncement but got {:?}", result);
+            }
+            None => {
+                unreachable!("Should have received TreeAnnouncement but got nothing");
+            }
+        }
+    }
+    #[tokio::test]
+    async fn receive_valid_first_announcement_as_root() {
+        /*let _ = env_logger::builder()
+            .write_style(WriteStyle::Always)
+            .format_timestamp(None)
+            .filter_level(LevelFilter::Debug)
+            .filter_module("rust_pinecone", LevelFilter::Trace)
+            .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
+        let announcement = Frame::TreeAnnouncement(TreeAnnouncement {
+            root: Root {
+                public_key: pub1,
+                sequence_number: 0,
+            },
+            signatures: vec![RootAnnouncementSignature {
+                signing_public_key: pub1,
+                destination_port: 1,
+            }],
+            receive_time: SystemTime::now(),
+            receive_order: 0,
+        });
+        assert!(r.handle_frame(announcement, pub1).await.is_ok());
+        match rd.next().await {
+            Some(Ok(Frame::TreeAnnouncement(ann))) => {
+                assert_eq!(
+                    ann.root,
+                    Root {
+                        public_key: pub2,
+                        sequence_number: 0
+                    }
+                );
+                assert_eq!(
+                    ann.signatures.get(0).unwrap(),
+                    &RootAnnouncementSignature {
+                        signing_public_key: pub2,
+                        destination_port: 1
+                    }
+                );
+                assert_eq!(ann.signatures.get(2), None);
+            }
+            Some(result) => {
+                unreachable!("Should have received TreeAnnouncement but got {:?}", result);
+            }
+            None => {
+                unreachable!("Should have received TreeAnnouncement but got nothing");
+            }
+        }
+    }
+    #[tokio::test]
+    async fn receive_valid_first_announcement_as_non_root() {
+        /*let _ = env_logger::builder()
+            .write_style(WriteStyle::Always)
+            .format_timestamp(None)
+            .filter_level(LevelFilter::Debug)
+            .filter_module("rust_pinecone", LevelFilter::Trace)
+            .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
+        let announcement = Frame::TreeAnnouncement(TreeAnnouncement {
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
+            signatures: vec![RootAnnouncementSignature {
+                signing_public_key: pub2,
+                destination_port: 1,
+            }],
+            receive_time: SystemTime::now(),
+            receive_order: 0,
+        });
+        assert!(r.handle_frame(announcement, pub2).await.is_ok());
+        match rd.next().await {
+            Some(Ok(Frame::TreeAnnouncement(ann))) => {
+                assert_eq!(
+                    ann.root,
+                    Root {
+                        public_key: pub2,
+                        sequence_number: 0
+                    }
+                );
+                assert_eq!(
+                    ann.signatures.get(0).unwrap(),
+                    &RootAnnouncementSignature {
+                        signing_public_key: pub2,
+                        destination_port: 1
+                    }
+                );
+                assert_eq!(
+                    ann.signatures.get(1).unwrap(),
+                    &RootAnnouncementSignature {
+                        signing_public_key: pub1,
+                        destination_port: 1
+                    }
+                );
+                assert_eq!(ann.signatures.get(2), None);
+            }
+            Some(result) => {
+                unreachable!("Should have received TreeAnnouncement but got {:?}", result);
+            }
+            None => {
+                unreachable!("Should have received TreeAnnouncement but got nothing");
+            }
+        }
+    }
+    async fn set_first_announcement(r: &mut Router, peer_key: PublicKey) {
+        r.announcements.write().await.insert(peer_key, TreeAnnouncement {
+            root: Root { public_key: peer_key, sequence_number: 0 },
+            signatures: vec![
+                RootAnnouncementSignature { signing_public_key: peer_key, destination_port: 1 }
+            ],
+            receive_time: SystemTime::now(),
+            receive_order: 1
+        });
+    }
+    #[tokio::test]
+    async fn drop_announcement_with_loop() {
+        /*let _ = env_logger::builder()
+            .write_style(WriteStyle::Always)
+            .format_timestamp(None)
+            .filter_level(LevelFilter::Debug)
+            .filter_module("rust_pinecone", LevelFilter::Trace)
+            .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
+        set_first_announcement(&mut r, pub1).await;
+        let frame = Frame::TreeAnnouncement(TreeAnnouncement {
+            root: Root { public_key: pub2, sequence_number: 0 },
+            signatures: vec![
+                RootAnnouncementSignature { signing_public_key: pub2, destination_port: 1 },
+                RootAnnouncementSignature { signing_public_key: pub1, destination_port: 1 }
+            ],
+            receive_time: SystemTime::now(),
+            receive_order: 0
+        });
+        r.handle_frame(frame, pub1).await;
+        assert!(nothing_to_receive(rd).await);
+    }
+    async fn nothing_to_receive(con: DownloadConnection) -> bool {
+        match con {
+            DownloadConnection::Test(mut stream) => match stream.try_recv() {
+                Ok(frame) => {
+                    unreachable!("Should have received nothing but got {:?}", frame);
+                }
+                Err(TryRecvError::Empty) => {true}
+                Err(e) => {
+                    panic!("{:?}",e);
+                }
+            },
+            e => {
+                panic!("{:?}",e)
+            }
+        }
+    }
+    #[tokio::test]
+    async fn router_connects_as_non_root() {
+        /*let _ = env_logger::builder()
+            .write_style(WriteStyle::Always)
+            .format_timestamp(None)
+            .filter_level(LevelFilter::Debug)
+            .filter_module("rust_pinecone", LevelFilter::Trace)
+            .init();*/
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (r1_upload_sender, r1_upload_receiver) = channel(100);
@@ -1657,19 +1866,31 @@ mod test {
         }
         sleep(Duration::from_secs(1)).await;
         assert!(router1.ascending_path.read().await.is_some());
-        match r2_d {
-            DownloadConnection::Test(mut stream) => match stream.try_recv() {
-                Ok(frame) => {
-                    unreachable!("Should have received nothing but got {:?}", frame);
-                }
-                Err(TryRecvError::Empty) => {}
-                _ => {
-                    panic!()
-                }
-            },
-            _ => {
-                panic!()
-            }
+        assert!(nothing_to_receive(r2_d).await);
+    }
+    #[tokio::test]
+    async fn receive_replayed_sequence_number() {
+        /*let _ = env_logger::builder()
+            .write_style(WriteStyle::Always)
+            .format_timestamp(None)
+            .filter_level(LevelFilter::Debug)
+            .filter_module("rust_pinecone", LevelFilter::Trace)
+            .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (mut r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
+        set_first_announcement(&mut r, pub2).await;
+        let frame = TreeAnnouncement {
+            root: Root { public_key: pub2, sequence_number: 0 },
+            signatures: vec![
+                RootAnnouncementSignature { signing_public_key: pub2, destination_port: 1 },
+            ],
+            receive_time: SystemTime::now(),
+            receive_order: 0
+        };
+        r.handle_frame(Frame::TreeAnnouncement(frame.clone()), pub1).await;
+        if let Some(Ok(Frame::TreeAnnouncement(ann))) = rd.next().await {
+            assert_eq!(ann, frame);
         }
     }
 }
