@@ -1505,7 +1505,8 @@ impl Router {
 mod test {
     use crate::connection::new_test_connection;
     use crate::coordinates::Coordinates;
-    use crate::frames::{SnekBootstrap, SnekBootstrapAck, SnekPacket, SnekSetupAck};
+    use crate::frames::{SnekBootstrap, SnekBootstrapAck, SnekPacket, SnekSetup, SnekSetupAck};
+    use crate::snek::{SnekPath, SnekPathIndex};
     use crate::tree::RootAnnouncementSignature;
     use crate::{DownloadConnection, Frame, PublicKey, Root, Router, TreeAnnouncement};
     use env_logger::WriteStyle;
@@ -1514,6 +1515,7 @@ mod test {
     use tokio::sync::mpsc::channel;
     use tokio::sync::mpsc::error::TryRecvError;
     use tokio::time::sleep;
+
     async fn get_test_router_with_peer(
         router_key: PublicKey,
         peer_key: PublicKey,
@@ -1532,11 +1534,11 @@ mod test {
     #[tokio::test]
     async fn send_first_announcement() {
         /*let _ = env_logger::builder()
-            .write_style(WriteStyle::Always)
-            .format_timestamp(None)
-            .filter_level(LevelFilter::Debug)
-            .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();*/
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (r, mut rd) = get_test_router_with_peer(pub1, pub2, true).await;
@@ -1569,11 +1571,11 @@ mod test {
     #[tokio::test]
     async fn receive_valid_first_announcement_as_root() {
         /*let _ = env_logger::builder()
-            .write_style(WriteStyle::Always)
-            .format_timestamp(None)
-            .filter_level(LevelFilter::Debug)
-            .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();*/
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
@@ -1619,11 +1621,11 @@ mod test {
     #[tokio::test]
     async fn receive_valid_first_announcement_as_non_root() {
         /*let _ = env_logger::builder()
-            .write_style(WriteStyle::Always)
-            .format_timestamp(None)
-            .filter_level(LevelFilter::Debug)
-            .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();*/
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
@@ -1674,35 +1676,51 @@ mod test {
         }
     }
     async fn set_first_announcement(r: &mut Router, peer_key: PublicKey) {
-        r.announcements.write().await.insert(peer_key, TreeAnnouncement {
-            root: Root { public_key: peer_key, sequence_number: 0 },
-            signatures: vec![
-                RootAnnouncementSignature { signing_public_key: peer_key, destination_port: 1 }
-            ],
-            receive_time: SystemTime::now(),
-            receive_order: 1
-        });
+        r.announcements.write().await.insert(
+            peer_key,
+            TreeAnnouncement {
+                root: Root {
+                    public_key: peer_key,
+                    sequence_number: 0,
+                },
+                signatures: vec![RootAnnouncementSignature {
+                    signing_public_key: peer_key,
+                    destination_port: 1,
+                }],
+                receive_time: SystemTime::now(),
+                receive_order: 1,
+            },
+        );
     }
     #[tokio::test]
     async fn drop_announcement_with_loop() {
         /*let _ = env_logger::builder()
-            .write_style(WriteStyle::Always)
-            .format_timestamp(None)
-            .filter_level(LevelFilter::Debug)
-            .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();*/
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
         set_first_announcement(&mut r, pub1).await;
         let frame = Frame::TreeAnnouncement(TreeAnnouncement {
-            root: Root { public_key: pub2, sequence_number: 0 },
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
             signatures: vec![
-                RootAnnouncementSignature { signing_public_key: pub2, destination_port: 1 },
-                RootAnnouncementSignature { signing_public_key: pub1, destination_port: 1 }
+                RootAnnouncementSignature {
+                    signing_public_key: pub2,
+                    destination_port: 1,
+                },
+                RootAnnouncementSignature {
+                    signing_public_key: pub1,
+                    destination_port: 1,
+                },
             ],
             receive_time: SystemTime::now(),
-            receive_order: 0
+            receive_order: 0,
         });
         r.handle_frame(frame, pub1).await;
         assert!(match rd {
@@ -1710,24 +1728,26 @@ mod test {
                 Ok(frame) => {
                     unreachable!("Should have received nothing but got {:?}", frame);
                 }
-                Err(TryRecvError::Empty) => {true}
+                Err(TryRecvError::Empty) => {
+                    true
+                }
                 Err(e) => {
-                    panic!("{:?}",e);
+                    panic!("{:?}", e);
                 }
             },
             e => {
-                panic!("{:?}",e)
+                panic!("{:?}", e)
             }
         });
     }
     #[tokio::test]
     async fn router_connects_as_non_root() {
         /*let _ = env_logger::builder()
-            .write_style(WriteStyle::Always)
-            .format_timestamp(None)
-            .filter_level(LevelFilter::Debug)
-            .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();*/
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (r1_upload_sender, r1_upload_receiver) = channel(100);
@@ -1868,108 +1888,141 @@ mod test {
                 Ok(frame) => {
                     unreachable!("Should have received nothing but got {:?}", frame);
                 }
-                Err(TryRecvError::Empty) => {true}
+                Err(TryRecvError::Empty) => {
+                    true
+                }
                 Err(e) => {
-                    panic!("{:?}",e);
+                    panic!("{:?}", e);
                 }
             },
             e => {
-                panic!("{:?}",e)
+                panic!("{:?}", e)
             }
         });
     }
     #[tokio::test]
     async fn receive_replayed_sequence_number() {
         /*let _ = env_logger::builder()
-            .write_style(WriteStyle::Always)
-            .format_timestamp(None)
-            .filter_level(LevelFilter::Debug)
-            .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();*/
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (mut r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
         set_first_announcement(&mut r, pub2).await;
         let frame = TreeAnnouncement {
-            root: Root { public_key: pub2, sequence_number: 0 },
-            signatures: vec![
-                RootAnnouncementSignature { signing_public_key: pub2, destination_port: 1 },
-            ],
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
+            signatures: vec![RootAnnouncementSignature {
+                signing_public_key: pub2,
+                destination_port: 1,
+            }],
             receive_time: SystemTime::now(),
-            receive_order: 0
+            receive_order: 0,
         };
-        r.handle_frame(Frame::TreeAnnouncement(frame.clone()), pub1).await;
+        r.handle_frame(Frame::TreeAnnouncement(frame.clone()), pub1)
+            .await;
         assert!(match rd {
             DownloadConnection::Test(mut stream) => match stream.try_recv() {
                 Ok(frame) => {
                     unreachable!("Should have received nothing but got {:?}", frame);
                 }
-                Err(TryRecvError::Empty) => {true}
+                Err(TryRecvError::Empty) => {
+                    true
+                }
                 Err(e) => {
-                    panic!("{:?}",e);
+                    panic!("{:?}", e);
                 }
             },
             e => {
-                panic!("{:?}",e)
+                panic!("{:?}", e)
             }
         })
     }
     #[tokio::test]
     async fn receive_announcement_with_loop() {
         /*let _ = env_logger::builder()
-            .write_style(WriteStyle::Always)
-            .format_timestamp(None)
-            .filter_level(LevelFilter::Debug)
-            .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();*/
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
         set_first_announcement(&mut r, pub1).await;
         let announcement = TreeAnnouncement {
-            root: Root { public_key: pub2, sequence_number: 0 },
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
             signatures: vec![
-                RootAnnouncementSignature { signing_public_key: pub2, destination_port: 1 },
-                RootAnnouncementSignature { signing_public_key: pub1, destination_port: 1 },
+                RootAnnouncementSignature {
+                    signing_public_key: pub2,
+                    destination_port: 1,
+                },
+                RootAnnouncementSignature {
+                    signing_public_key: pub1,
+                    destination_port: 1,
+                },
             ],
             receive_time: SystemTime::now(),
-            receive_order: 0
+            receive_order: 0,
         };
-        r.handle_frame(Frame::TreeAnnouncement(announcement), pub1).await;
+        r.handle_frame(Frame::TreeAnnouncement(announcement), pub1)
+            .await;
         assert!(match rd {
             DownloadConnection::Test(mut stream) => match stream.try_recv() {
                 Ok(frame) => {
                     unreachable!("Should have received nothing but got {:?}", frame);
                 }
-                Err(TryRecvError::Empty) => {true}
+                Err(TryRecvError::Empty) => {
+                    true
+                }
                 Err(e) => {
-                    panic!("{:?}",e);
+                    panic!("{:?}", e);
                 }
             },
             e => {
-                panic!("{:?}",e)
+                panic!("{:?}", e)
             }
         });
     }
     async fn set_second_announcement_for_root(r: &mut Router, peer_key: PublicKey) {
-        r.announcements.write().await.insert(peer_key, TreeAnnouncement {
-            root: Root { public_key: r.public_key(), sequence_number: 0 },
-            signatures: vec![
-                RootAnnouncementSignature { signing_public_key: r.public_key(), destination_port: 1 },
-                RootAnnouncementSignature { signing_public_key: peer_key, destination_port: 1 }
-            ],
-            receive_time: SystemTime::now(),
-            receive_order: 0
-        });
+        r.announcements.write().await.insert(
+            peer_key,
+            TreeAnnouncement {
+                root: Root {
+                    public_key: r.public_key(),
+                    sequence_number: 0,
+                },
+                signatures: vec![
+                    RootAnnouncementSignature {
+                        signing_public_key: r.public_key(),
+                        destination_port: 1,
+                    },
+                    RootAnnouncementSignature {
+                        signing_public_key: peer_key,
+                        destination_port: 1,
+                    },
+                ],
+                receive_time: SystemTime::now(),
+                receive_order: 0,
+            },
+        );
     }
     #[tokio::test]
     async fn bootstrap() {
         /*let _ = env_logger::builder()
-            .write_style(WriteStyle::Always)
-            .format_timestamp(None)
-            .filter_level(LevelFilter::Debug)
-            .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();*/
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (mut r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
@@ -1978,7 +2031,13 @@ mod test {
         r.bootstrap_now().await;
         let frame = rd.next().await;
         if let Some(Ok(Frame::SnekBootstrap(bootstrap))) = frame {
-            assert_eq!(bootstrap.root, Root { public_key: pub2, sequence_number: 0 });
+            assert_eq!(
+                bootstrap.root,
+                Root {
+                    public_key: pub2,
+                    sequence_number: 0
+                }
+            );
             assert_eq!(bootstrap.destination_key, pub1);
             assert_eq!(bootstrap.source, Coordinates::new(vec![1]));
         } else {
@@ -1988,11 +2047,11 @@ mod test {
     #[tokio::test]
     async fn dont_bootstrap_as_root() {
         /*let _ = env_logger::builder()
-            .write_style(WriteStyle::Always)
-            .format_timestamp(None)
-            .filter_level(LevelFilter::Debug)
-            .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();*/
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
@@ -2008,11 +2067,11 @@ mod test {
     #[tokio::test]
     async fn respond_to_bootstrap_as_root() {
         /*let _ = env_logger::builder()
-            .write_style(WriteStyle::Always)
-            .format_timestamp(None)
-            .filter_level(LevelFilter::Debug)
-            .filter_module("rust_pinecone", LevelFilter::Trace)
-            .init();*/
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
         let pub1 = [1; 32];
         let pub2 = [2; 32];
         let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
@@ -2020,15 +2079,24 @@ mod test {
         set_second_announcement_for_root(&mut r, pub1).await;
         *r.parent.write().await = pub2;
         let bootstrap = SnekBootstrap {
-            root: Root { public_key: pub2, sequence_number: 0 },
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
             destination_key: pub1,
             source: Coordinates::new(vec![1]),
-            path_id: 0
+            path_id: 0,
         };
         r.handle_frame(Frame::SnekBootstrap(bootstrap), pub1).await;
         let recv = rd.next().await;
         if let Some(Ok(Frame::SnekBootstrapACK(ack))) = recv {
-            assert_eq!(ack.root, Root { public_key: pub2, sequence_number: 0 });
+            assert_eq!(
+                ack.root,
+                Root {
+                    public_key: pub2,
+                    sequence_number: 0
+                }
+            );
             assert_eq!(ack.destination_key, pub1);
             assert_eq!(ack.destination_coordinates, Coordinates::new(vec![1]));
             assert_eq!(ack.path_id, 0);
@@ -2037,5 +2105,235 @@ mod test {
         } else {
             panic!("Should have gotten BootstrapAck but got {:?}", recv);
         }
+    }
+    #[tokio::test]
+    async fn receive_bootstrap_ack() {
+        /*let _ = env_logger::builder()
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (mut r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
+        set_first_announcement(&mut r, pub2).await;
+        *r.parent.write().await = pub2;
+        let ack = SnekBootstrapAck {
+            destination_coordinates: Coordinates::new(vec![1]),
+            destination_key: pub1,
+            source_coordinates: Default::default(),
+            source_key: pub2,
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
+            path_id: 0,
+        };
+        r.handle_frame(Frame::SnekBootstrapACK(ack), pub2)
+            .await
+            .unwrap();
+        let recv = rd.next().await;
+        if let Some(Ok(Frame::SnekSetup(setup))) = recv {
+            assert_eq!(setup.path_id, 0);
+            assert_eq!(setup.source_key, pub1);
+            assert_eq!(setup.destination_key, pub2);
+            assert_eq!(setup.destination, Coordinates::default());
+            assert_eq!(
+                setup.root,
+                Root {
+                    public_key: pub2,
+                    sequence_number: 0
+                }
+            );
+        } else {
+            panic!("Should have gotten Setup but got {:?}", recv);
+        }
+        let index = SnekPathIndex {
+            public_key: pub1,
+            path_id: 0,
+        };
+        let mut entry = SnekPath {
+            index: index.clone(),
+            origin: pub2,
+            target: pub2,
+            source: 0,
+            destination: 1,
+            last_seen: SystemTime::now(),
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
+            active: false,
+        };
+        let path = r.paths.read().await.get(&index).cloned().unwrap();
+        assert_eq!(path.active, entry.active);
+        assert_eq!(path.index, entry.index);
+        assert_eq!(path.root, entry.root);
+        assert_eq!(path.source, entry.source);
+        assert_eq!(path.destination, entry.destination);
+        assert_eq!(path.origin, entry.origin);
+        assert_eq!(path.target, entry.target);
+        entry.active = true;
+        let candidate = r.candidate.read().await.clone().unwrap();
+        assert_eq!(&candidate.active, &entry.active);
+        assert_eq!(&candidate.index, &entry.index);
+        assert_eq!(&candidate.root, &entry.root);
+        assert_eq!(&candidate.source, &entry.source);
+        assert_eq!(&candidate.destination, &entry.destination);
+        assert_eq!(&candidate.origin, &entry.origin);
+        assert_eq!(&candidate.target, &entry.target);
+    }
+    #[tokio::test]
+    async fn respond_to_setup_as_root() {
+        /*let _ = env_logger::builder()
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
+        set_first_announcement(&mut r, pub1).await;
+        set_second_announcement_for_root(&mut r, pub1).await;
+        *r.parent.write().await = pub2;
+        let setup = SnekSetup {
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
+            destination: Default::default(),
+            destination_key: pub2,
+            source_key: pub1,
+            path_id: 0,
+        };
+        r.handle_frame(Frame::SnekSetup(setup), pub1).await.unwrap();
+        let recv = rd.next().await;
+        if let Some(Ok(Frame::SnekSetupACK(ack))) = recv {
+            assert_eq!(
+                ack.root,
+                Root {
+                    public_key: pub2,
+                    sequence_number: 0
+                }
+            );
+            assert_eq!(ack.path_id, 0);
+            assert_eq!(ack.destination_key, pub1);
+        } else {
+            panic!("Should have gotten SetupAck but got {:?}", recv);
+        }
+        let index = SnekPathIndex {
+            public_key: pub1,
+            path_id: 0,
+        };
+        let mut entry = SnekPath {
+            index: index.clone(),
+            origin: pub1,
+            target: pub2,
+            source: 1,
+            destination: 0,
+            last_seen: SystemTime::now(),
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
+            active: true,
+        };
+        let path = r.paths.read().await.get(&index).cloned().unwrap();
+        assert_eq!(path.active, entry.active);
+        assert_eq!(path.index, entry.index);
+        assert_eq!(path.root, entry.root);
+        assert_eq!(path.source, entry.source);
+        assert_eq!(path.destination, entry.destination);
+        assert_eq!(path.origin, entry.origin);
+        assert_eq!(path.target, entry.target);
+        entry.active = true;
+        let descending = r.descending_path.read().await.clone().unwrap();
+        assert_eq!(&descending.active, &entry.active);
+        assert_eq!(&descending.index, &entry.index);
+        assert_eq!(&descending.root, &entry.root);
+        assert_eq!(&descending.source, &entry.source);
+        assert_eq!(&descending.destination, &entry.destination);
+        assert_eq!(&descending.origin, &entry.origin);
+        assert_eq!(&descending.target, &entry.target);
+    }
+    #[tokio::test]
+    async fn receive_setup_ack() {
+        /*let _ = env_logger::builder()
+        .write_style(WriteStyle::Always)
+        .format_timestamp(None)
+        .filter_level(LevelFilter::Debug)
+        .filter_module("rust_pinecone", LevelFilter::Trace)
+        .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (mut r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
+        set_first_announcement(&mut r, pub2).await;
+        *r.parent.write().await = pub2;
+        let ack = SnekSetupAck {
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
+            destination_key: pub1,
+            path_id: 0,
+        };
+        let index = SnekPathIndex {
+            public_key: pub1,
+            path_id: 0,
+        };
+        let mut entry = SnekPath {
+            index: index.clone(),
+            origin: pub2,
+            target: pub2,
+            source: 0,
+            destination: 1,
+            last_seen: SystemTime::now(),
+            root: Root {
+                public_key: pub2,
+                sequence_number: 0,
+            },
+            active: false,
+        };
+        r.paths.write().await.insert(index.clone(), entry.clone());
+        entry.active = true;
+        r.candidate.write().await.insert(entry.clone());
+        r.handle_frame(Frame::SnekSetupACK(ack), pub2)
+            .await
+            .unwrap();
+        let path = r.paths.read().await.get(&index).cloned().unwrap();
+        assert_eq!(path.active, entry.active);
+        assert_eq!(path.index, entry.index);
+        assert_eq!(path.root, entry.root);
+        assert_eq!(path.source, entry.source);
+        assert_eq!(path.destination, entry.destination);
+        assert_eq!(path.origin, entry.origin);
+        assert_eq!(path.target, entry.target);
+        let ascending = r.ascending_path.read().await.clone().unwrap();
+        assert_eq!(&ascending.active, &entry.active);
+        assert_eq!(&ascending.index, &entry.index);
+        assert_eq!(&ascending.root, &entry.root);
+        assert_eq!(&ascending.source, &entry.source);
+        assert_eq!(&ascending.destination, &entry.destination);
+        assert_eq!(&ascending.origin, &entry.origin);
+        assert_eq!(&ascending.target, &entry.target);
+        assert!(r.candidate.read().await.is_none());
+        assert!(match rd {
+            DownloadConnection::Test(mut stream) => match stream.try_recv() {
+                Ok(frame) => {
+                    unreachable!("Should have received nothing but got {:?}", frame);
+                }
+                Err(TryRecvError::Empty) => {
+                    true
+                }
+                Err(e) => {
+                    panic!("{:?}", e);
+                }
+            },
+            e => {
+                panic!("{:?}", e)
+            }
+        });
     }
 }
