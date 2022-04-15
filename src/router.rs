@@ -1505,7 +1505,7 @@ impl Router {
 mod test {
     use crate::connection::new_test_connection;
     use crate::coordinates::Coordinates;
-    use crate::frames::{SnekBootstrapAck, SnekPacket, SnekSetupAck};
+    use crate::frames::{SnekBootstrap, SnekBootstrapAck, SnekPacket, SnekSetupAck};
     use crate::tree::RootAnnouncementSignature;
     use crate::{DownloadConnection, Frame, PublicKey, Root, Router, TreeAnnouncement};
     use env_logger::WriteStyle;
@@ -1705,10 +1705,7 @@ mod test {
             receive_order: 0
         });
         r.handle_frame(frame, pub1).await;
-        assert!(nothing_to_receive(rd).await);
-    }
-    async fn nothing_to_receive(con: DownloadConnection) -> bool {
-        match con {
+        assert!(match rd {
             DownloadConnection::Test(mut stream) => match stream.try_recv() {
                 Ok(frame) => {
                     unreachable!("Should have received nothing but got {:?}", frame);
@@ -1721,7 +1718,7 @@ mod test {
             e => {
                 panic!("{:?}",e)
             }
-        }
+        });
     }
     #[tokio::test]
     async fn router_connects_as_non_root() {
@@ -1864,9 +1861,22 @@ mod test {
                 unreachable!("Should have received SnekSetup but got nothing");
             }
         }
-        sleep(Duration::from_secs(1)).await;
+        sleep(Duration::from_millis(100)).await;
         assert!(router1.ascending_path.read().await.is_some());
-        assert!(nothing_to_receive(r2_d).await);
+        assert!(match r2_d {
+            DownloadConnection::Test(mut stream) => match stream.try_recv() {
+                Ok(frame) => {
+                    unreachable!("Should have received nothing but got {:?}", frame);
+                }
+                Err(TryRecvError::Empty) => {true}
+                Err(e) => {
+                    panic!("{:?}",e);
+                }
+            },
+            e => {
+                panic!("{:?}",e)
+            }
+        });
     }
     #[tokio::test]
     async fn receive_replayed_sequence_number() {
@@ -1889,8 +1899,143 @@ mod test {
             receive_order: 0
         };
         r.handle_frame(Frame::TreeAnnouncement(frame.clone()), pub1).await;
-        if let Some(Ok(Frame::TreeAnnouncement(ann))) = rd.next().await {
-            assert_eq!(ann, frame);
+        assert!(match rd {
+            DownloadConnection::Test(mut stream) => match stream.try_recv() {
+                Ok(frame) => {
+                    unreachable!("Should have received nothing but got {:?}", frame);
+                }
+                Err(TryRecvError::Empty) => {true}
+                Err(e) => {
+                    panic!("{:?}",e);
+                }
+            },
+            e => {
+                panic!("{:?}",e)
+            }
+        })
+    }
+    #[tokio::test]
+    async fn receive_announcement_with_loop() {
+        /*let _ = env_logger::builder()
+            .write_style(WriteStyle::Always)
+            .format_timestamp(None)
+            .filter_level(LevelFilter::Debug)
+            .filter_module("rust_pinecone", LevelFilter::Trace)
+            .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
+        set_first_announcement(&mut r, pub1).await;
+        let announcement = TreeAnnouncement {
+            root: Root { public_key: pub2, sequence_number: 0 },
+            signatures: vec![
+                RootAnnouncementSignature { signing_public_key: pub2, destination_port: 1 },
+                RootAnnouncementSignature { signing_public_key: pub1, destination_port: 1 },
+            ],
+            receive_time: SystemTime::now(),
+            receive_order: 0
+        };
+        r.handle_frame(Frame::TreeAnnouncement(announcement), pub1).await;
+        assert!(match rd {
+            DownloadConnection::Test(mut stream) => match stream.try_recv() {
+                Ok(frame) => {
+                    unreachable!("Should have received nothing but got {:?}", frame);
+                }
+                Err(TryRecvError::Empty) => {true}
+                Err(e) => {
+                    panic!("{:?}",e);
+                }
+            },
+            e => {
+                panic!("{:?}",e)
+            }
+        });
+    }
+    async fn set_second_announcement_for_root(r: &mut Router, peer_key: PublicKey) {
+        r.announcements.write().await.insert(peer_key, TreeAnnouncement {
+            root: Root { public_key: r.public_key(), sequence_number: 0 },
+            signatures: vec![
+                RootAnnouncementSignature { signing_public_key: r.public_key(), destination_port: 1 },
+                RootAnnouncementSignature { signing_public_key: peer_key, destination_port: 1 }
+            ],
+            receive_time: SystemTime::now(),
+            receive_order: 0
+        });
+    }
+    #[tokio::test]
+    async fn bootstrap() {
+        /*let _ = env_logger::builder()
+            .write_style(WriteStyle::Always)
+            .format_timestamp(None)
+            .filter_level(LevelFilter::Debug)
+            .filter_module("rust_pinecone", LevelFilter::Trace)
+            .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (mut r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
+        set_first_announcement(&mut r, pub2).await;
+        *r.parent.write().await = pub2;
+        r.bootstrap_now().await;
+        let frame = rd.next().await;
+        if let Some(Ok(Frame::SnekBootstrap(bootstrap))) = frame {
+            assert_eq!(bootstrap.root, Root { public_key: pub2, sequence_number: 0 });
+            assert_eq!(bootstrap.destination_key, pub1);
+            assert_eq!(bootstrap.source, Coordinates::new(vec![1]));
+        } else {
+            panic!("Should have received a bootstrap but got {:?}", frame);
+        }
+    }
+    #[tokio::test]
+    async fn dont_bootstrap_as_root() {
+        /*let _ = env_logger::builder()
+            .write_style(WriteStyle::Always)
+            .format_timestamp(None)
+            .filter_level(LevelFilter::Debug)
+            .filter_module("rust_pinecone", LevelFilter::Trace)
+            .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
+        set_first_announcement(&mut r, pub1).await;
+        *r.parent.write().await = pub2;
+        r.bootstrap_now().await;
+        let frame = rd.next().await;
+        if let None = frame {
+        } else {
+            panic!("Should have received nothing but got {:?}", frame);
+        }
+    }
+    #[tokio::test]
+    async fn respond_to_bootstrap_as_root() {
+        /*let _ = env_logger::builder()
+            .write_style(WriteStyle::Always)
+            .format_timestamp(None)
+            .filter_level(LevelFilter::Debug)
+            .filter_module("rust_pinecone", LevelFilter::Trace)
+            .init();*/
+        let pub1 = [1; 32];
+        let pub2 = [2; 32];
+        let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
+        set_first_announcement(&mut r, pub1).await;
+        set_second_announcement_for_root(&mut r, pub1).await;
+        *r.parent.write().await = pub2;
+        let bootstrap = SnekBootstrap {
+            root: Root { public_key: pub2, sequence_number: 0 },
+            destination_key: pub1,
+            source: Coordinates::new(vec![1]),
+            path_id: 0
+        };
+        r.handle_frame(Frame::SnekBootstrap(bootstrap), pub1).await;
+        let recv = rd.next().await;
+        if let Some(Ok(Frame::SnekBootstrapACK(ack))) = recv {
+            assert_eq!(ack.root, Root { public_key: pub2, sequence_number: 0 });
+            assert_eq!(ack.destination_key, pub1);
+            assert_eq!(ack.destination_coordinates, Coordinates::new(vec![1]));
+            assert_eq!(ack.path_id, 0);
+            assert_eq!(ack.source_key, pub2);
+            assert_eq!(ack.source_coordinates, Coordinates::default());
+        } else {
+            panic!("Should have gotten BootstrapAck but got {:?}", recv);
         }
     }
 }
