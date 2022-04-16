@@ -17,9 +17,9 @@ pub enum Frame {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct SnekPacket {
-    pub(crate) destination_key: PublicKey,
-    pub(crate) source_key: PublicKey,
-    pub(crate) payload: Vec<u8>,
+    pub destination_key: PublicKey,
+    pub source_key: PublicKey,
+    pub payload: Vec<u8>,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct TreePacket {

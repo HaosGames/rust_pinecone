@@ -1,23 +1,23 @@
 use crate::connection::{DownloadConnection, UploadConnection};
-use crate::frames::{Frame, SnekPacket, TreeAnnouncement};
-use crate::router::{PublicKey, Router};
-use crate::tree::Root;
+use crate::frames::{Frame, SnekPacket};
+use crate::router::Router;
 use crate::wire_frame::PineconeCodec;
 use ed25519_consensus::{SigningKey, VerificationKeyBytes};
 use env_logger::WriteStyle;
 use log::{debug, info, trace, LevelFilter};
 use rand::thread_rng;
 use std::env::args;
-use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::channel;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
+mod client;
 mod connection;
 mod coordinates;
 mod error;
 mod frames;
 mod router;
+mod session;
 mod snek;
 mod tree;
 mod wait_timer;

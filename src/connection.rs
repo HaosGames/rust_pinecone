@@ -1,5 +1,6 @@
 use crate::error::RouterError;
-use crate::{Frame, PineconeCodec};
+use crate::frames::Frame;
+use crate::wire_frame::PineconeCodec;
 use futures::SinkExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -37,6 +38,16 @@ impl UploadConnection {
             #[cfg(test)]
             UploadConnection::Test(sink) => Ok(sink.send(frame).await?),
         }
+    }
+}
+impl From<OwnedReadHalf> for DownloadConnection {
+    fn from(stream: OwnedReadHalf) -> Self {
+        Self::Tcp(FramedRead::new(stream, PineconeCodec))
+    }
+}
+impl From<OwnedWriteHalf> for UploadConnection {
+    fn from(sink: OwnedWriteHalf) -> Self {
+        Self::Tcp(FramedWrite::new(sink, PineconeCodec))
     }
 }
 #[cfg(test)]

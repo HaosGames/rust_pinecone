@@ -1,4 +1,4 @@
-use crate::Frame;
+use crate::frames::Frame;
 use std::fmt::{Display, Formatter};
 
 #[derive(Debug)]

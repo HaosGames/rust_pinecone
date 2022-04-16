@@ -1,13 +1,13 @@
 use crate::connection::{DownloadConnection, UploadConnection};
 use crate::coordinates::Coordinates;
 use crate::error::RouterError;
+use crate::frames::TreeAnnouncement;
 use crate::frames::{
     Frame, SnekBootstrap, SnekBootstrapAck, SnekSetup, SnekSetupAck, SnekTeardown,
 };
 use crate::snek::{SnekPath, SnekPathIndex, SnekRouted};
-use crate::tree::TreeRouted;
+use crate::tree::{Root, TreeRouted};
 use crate::wait_timer::WaitTimer;
-use crate::{Root, TreeAnnouncement};
 use log::{debug, info, trace, warn};
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
@@ -153,13 +153,13 @@ impl Router {
         &self,
         mut upload: UploadConnection,
         mut download: DownloadConnection,
-    ) -> Result<(), RouterError> {
+    ) -> Result<PublicKey, RouterError> {
         let port = self.get_new_port().await;
         let announcement = self
             .current_announcement()
             .await
             .append_signature(self.public_key(), port);
-        upload.send(Frame::TreeAnnouncement(announcement)).await;
+        upload.send(Frame::TreeAnnouncement(announcement)).await?;
         return match download.next().await {
             Some(decoding_result) => match decoding_result {
                 Ok(Frame::TreeAnnouncement(ann)) => {
@@ -171,8 +171,8 @@ impl Router {
                         self.add_peer(public_key, port, upload, download, false)
                             .await;
                         self.handle_frame(Frame::TreeAnnouncement(ann), public_key)
-                            .await;
-                        Ok(())
+                            .await?;
+                        Ok(public_key)
                     } else {
                         Err(RouterError::MissingSignature)
                     }
@@ -1496,12 +1496,9 @@ impl Router {
 #[allow(unused)]
 #[cfg(test)]
 mod test {
+    use super::*;
     use crate::connection::new_test_connection;
-    use crate::coordinates::Coordinates;
-    use crate::frames::{SnekBootstrap, SnekBootstrapAck, SnekPacket, SnekSetup, SnekSetupAck};
-    use crate::snek::{SnekPath, SnekPathIndex};
     use crate::tree::RootAnnouncementSignature;
-    use crate::{DownloadConnection, Frame, PublicKey, Root, Router, TreeAnnouncement};
     use env_logger::WriteStyle;
     use log::{trace, LevelFilter};
     use std::time::{Duration, SystemTime};
