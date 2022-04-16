@@ -46,7 +46,6 @@ pub struct Router {
     announcements: Arc<RwLock<HashMap<PublicKey, TreeAnnouncement>>>,
     sequence: Arc<RwLock<SequenceNumber>>,
     ordering: Arc<RwLock<SequenceNumber>>,
-    announcement_timer: Arc<RwLock<WaitTimer>>,
     reparent_timer: Arc<RwLock<Option<WaitTimer>>>,
 
     ascending_path: Arc<RwLock<Option<SnekPath>>>,
@@ -67,7 +66,6 @@ impl Router {
             announcements: Default::default(),
             sequence: Arc::new(RwLock::new(0)),
             ordering: Arc::new(RwLock::new(0)),
-            announcement_timer: Arc::new(RwLock::new(WaitTimer::new(ANNOUNCEMENT_INTERVAL))),
             reparent_timer: Arc::new(RwLock::new(None)),
             ascending_path: Arc::new(RwLock::new(None)),
             descending_path: Arc::new(RwLock::new(None)),
@@ -362,7 +360,7 @@ impl Router {
     }
     async fn peers(&self) -> Vec<PublicKey> {
         let mut peers = Vec::new();
-        for (port, peer) in &*self.ports.read().await {
+        for (_port, peer) in &*self.ports.read().await {
             match peer {
                 None => {}
                 Some(peer) => {
@@ -425,12 +423,6 @@ impl Router {
     async fn set_reparent_timer(&self) {
         trace!("Reparent in {:?}", REPARENT_WAIT_TIME);
         *self.reparent_timer.write().await = Some(WaitTimer::new(REPARENT_WAIT_TIME));
-    }
-    async fn announcement_timer_expired(&self) -> bool {
-        self.announcement_timer.read().await.is_expired()
-    }
-    async fn reset_announcement_timer(&self) {
-        *self.announcement_timer.write().await = WaitTimer::new(ANNOUNCEMENT_INTERVAL);
     }
     async fn send_to_local(&self, frame: Frame) {
         self.download.send(frame).await.unwrap();
@@ -790,6 +782,7 @@ impl Router {
         tokio::spawn(async move {
             if wait {
                 trace!("Waiting to reparent");
+                router.set_reparent_timer().await;
                 sleep(REPARENT_WAIT_TIME).await;
             }
             trace!("Re-parenting");
