@@ -1,4 +1,3 @@
-use crate::connection::{DownloadConnection, UploadConnection};
 use crate::error::RouterError;
 use crate::frames::Frame;
 use crate::router::{PublicKey, Router};
@@ -7,9 +6,16 @@ use log::{debug, trace};
 use std::collections::HashMap;
 use std::sync::Arc;
 use ed25519_consensus::SigningKey;
+use futures_sink::Sink;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::RwLock;
-
+use tokio_stream::Stream;
+#[cfg(doc)]
+use tokio_util::codec::{FramedRead, FramedWrite};
+#[cfg(doc)]
+use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(doc)]
+use crate::wire_frame::PineconeCodec;
 /// This is the object that is used to connect the router with other peers
 /// and get [`Session`]s with other nodes in the overlay network.
 ///
@@ -75,10 +81,14 @@ impl Client {
         self.router.stop().await;
     }
     /// Directly connects a peer with the router using the given connections.
+    ///
+    /// `upload` is suggested to be a boxed [`FramedWrite`]<impl [`AsyncWrite`],[`PineconeCodec`]>
+    ///
+    /// `download` is suggested to be a boxed [`FramedRead`]<impl [`AsyncRead`],[`PineconeCodec`]>
     pub async fn connect_peer(
         &self,
-        upload: UploadConnection,
-        download: DownloadConnection,
+        upload: Box<dyn Sink<Frame, Error = RouterError> + Send + Unpin>,
+        download: Box<dyn Stream<Item = Result<Frame, RouterError>> + Send + Unpin>,
     ) -> Result<PublicKey, RouterError> {
         self.router.connect(upload, download).await
     }

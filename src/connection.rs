@@ -3,6 +3,7 @@ use crate::frames::Frame;
 use crate::wire_frame::PineconeCodec;
 use futures::SinkExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, FramedWrite};
@@ -51,18 +52,26 @@ impl From<OwnedWriteHalf> for UploadConnection {
     }
 }
 #[cfg(test)]
-pub(crate) fn new_test_connection() -> (
-    UploadConnection,
-    DownloadConnection,
-    UploadConnection,
-    DownloadConnection,
+pub(crate) async fn new_test_connection() -> (
+    Box<FramedWrite<OwnedWriteHalf, PineconeCodec>>,
+    Box<FramedRead<OwnedReadHalf, PineconeCodec>>,
+    Box<FramedWrite<OwnedWriteHalf, PineconeCodec>>,
+    Box<FramedRead<OwnedReadHalf, PineconeCodec>>,
 ) {
-    let (peer0_sender, peer1_receiver) = channel(10);
-    let (peer1_sender, peer0_receiver) = channel(10);
+    let bind = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = bind.local_addr().unwrap();
+    let socket1 = tokio::spawn(async move {
+        let (socket, _addr) = bind.accept().await.unwrap();
+        socket
+    });
+    let socket2 = TcpStream::connect(addr).await.unwrap();
+    let socket1 = socket1.await.unwrap();
+    let (s1d, s1u) = socket1.into_split();
+    let (s2d, s2u) = socket2.into_split();
     (
-        UploadConnection::Test(peer0_sender),
-        DownloadConnection::Test(peer0_receiver),
-        UploadConnection::Test(peer1_sender),
-        DownloadConnection::Test(peer1_receiver),
+        Box::new(FramedWrite::new(s1u, PineconeCodec)),
+        Box::new(FramedRead::new(s1d, PineconeCodec)),
+        Box::new(FramedWrite::new(s2u, PineconeCodec)),
+        Box::new(FramedRead::new(s2d, PineconeCodec)),
     )
 }

@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender};
-#[allow(unused)]
+#[cfg(doc)]
 use crate::client::Client;
 
 /// A session with a node in the network. This is being given out

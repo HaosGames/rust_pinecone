@@ -8,16 +8,19 @@ use crate::frames::{
 use crate::snek::{SnekPath, SnekPathIndex, SnekRouted};
 use crate::tree::{Root, TreeRouted};
 use crate::wait_timer::WaitTimer;
-use log::{debug, info, trace, warn};
+use log::{debug, info, Log, trace, warn};
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+use futures::SinkExt;
+use futures_sink::Sink;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::{interval_at, sleep, Instant};
+use tokio_stream::{Stream, StreamExt};
 
 pub type Port = u64;
 pub type SequenceNumber = u64;
@@ -36,10 +39,10 @@ pub struct Router {
     public_key: Arc<PublicKey>,
     running: Arc<RwLock<bool>>,
 
-    pub(crate) upload: Arc<Mutex<Receiver<Frame>>>,
-    pub(crate) download: Arc<Sender<Frame>>,
-    upload_connections: Arc<RwLock<HashMap<PublicKey, Arc<Mutex<UploadConnection>>>>>,
-    download_connections: Arc<RwLock<HashMap<PublicKey, Arc<Mutex<DownloadConnection>>>>>,
+    upload: Arc<Mutex<Receiver<Frame>>>,
+    download: Arc<Sender<Frame>>,
+    upload_connections: Arc<RwLock<HashMap<PublicKey, Arc<Mutex<Box<dyn Sink<Frame, Error = RouterError> + Send + Unpin>>>>>>,
+    download_connections: Arc<RwLock<HashMap<PublicKey, Arc<Mutex<Box<dyn Stream<Item = Result<Frame, RouterError>> + Send + Unpin>>>>>>,
     ports: Arc<RwLock<HashMap<Port, Option<PublicKey>>>>,
 
     parent: Arc<RwLock<PublicKey>>,
@@ -74,6 +77,8 @@ impl Router {
             running: Arc::new(RwLock::new(false)),
         }
     }
+    /// Starts the router instance. Finishing of the JoinHandle doesn't mean that the router stopped.
+    /// Only the local connection was closed.
     pub async fn start(&self) -> JoinHandle<Result<Self, RouterError>> {
         let mut running = self.running.write().await;
         *running = true;
@@ -128,17 +133,16 @@ impl Router {
                 if let Some(frame) = upload.recv().await {
                     router.handle_frame(frame, *router.public_key).await?;
                 } else {
-                    debug!("Local event channel closed. Stopping router");
+                    debug!("Local event channel closed. Only handling peer frames.");
                     break;
                 }
             }
-            trace!("Stopping the router");
             drop(upload);
-            router.stop().await;
             Ok(router)
         })
     }
     pub async fn stop(&self) {
+        trace!("Stopping the router");
         *self.running.write().await = false;
         for peer in self.peers().await {
             self.disconnect_peer(peer).await;
@@ -151,8 +155,8 @@ impl Router {
     /// can the public_key be read out of the first announcement.
     pub async fn connect(
         &self,
-        mut upload: UploadConnection,
-        mut download: DownloadConnection,
+        mut upload: Box<dyn Sink<Frame, Error = RouterError> + Send + Unpin>,
+        mut download: Box<dyn Stream<Item = Result<Frame, RouterError>> + Send + Unpin>,
     ) -> Result<PublicKey, RouterError> {
         let port = self.get_new_port().await;
         let announcement = self
@@ -187,8 +191,8 @@ impl Router {
         &self,
         peer: PublicKey,
         port: Port,
-        upload: UploadConnection,
-        download: DownloadConnection,
+        upload: Box<dyn Sink<Frame, Error = RouterError> + Send + Unpin>,
+        download: Box<dyn Stream<Item = Result<Frame, RouterError>> + Send + Unpin>,
         send_first_announcement: bool,
     ) {
         let mut upload_connections = self.upload_connections.write().await;
@@ -259,7 +263,7 @@ impl Router {
         };
     }
     async fn poll_download_connection(
-        socket: Arc<Mutex<DownloadConnection>>,
+        socket: Arc<Mutex<Box<dyn Stream<Item = Result<Frame, RouterError>> + Send + Unpin>>>,
     ) -> Option<Result<Frame, RouterError>> {
         let mut socket = socket.lock().await;
         socket.next().await
@@ -1502,19 +1506,23 @@ mod test {
     use env_logger::WriteStyle;
     use log::{trace, LevelFilter};
     use std::time::{Duration, SystemTime};
+    use futures::{StreamExt, TryStreamExt};
+    use tokio::net::tcp::OwnedReadHalf;
     use tokio::sync::mpsc::channel;
     use tokio::sync::mpsc::error::TryRecvError;
     use tokio::time::sleep;
+    use tokio_util::codec::FramedRead;
+    use crate::PineconeCodec;
 
     async fn get_test_router_with_peer(
         router_key: PublicKey,
         peer_key: PublicKey,
         send_first_announcement: bool,
-    ) -> (Router, DownloadConnection) {
+    ) -> (Router, Box<FramedRead<OwnedReadHalf, PineconeCodec>>) {
         let (r1_upload_sender, r1_upload_receiver) = channel(100);
         let (r1_download_sender, r1_download_receiver) = channel(100);
         let router1 = Router::new(router_key, r1_download_sender, r1_upload_receiver);
-        let (r1_u, r1_d, mut r2_u, mut r2_d) = new_test_connection();
+        let (r1_u, r1_d, mut r2_u, mut r2_d) = new_test_connection().await;
         let r1 = router1.start().await;
         router1
             .add_peer(peer_key, 1, r1_u, r1_d, send_first_announcement)
@@ -1713,22 +1721,7 @@ mod test {
             receive_order: 0,
         });
         r.handle_frame(frame, pub1).await;
-        assert!(match rd {
-            DownloadConnection::Test(mut stream) => match stream.try_recv() {
-                Ok(frame) => {
-                    unreachable!("Should have received nothing but got {:?}", frame);
-                }
-                Err(TryRecvError::Empty) => {
-                    true
-                }
-                Err(e) => {
-                    panic!("{:?}", e);
-                }
-            },
-            e => {
-                panic!("{:?}", e)
-            }
-        });
+        assert!(rd.next().await.is_none());
     }
     #[tokio::test]
     async fn router_connects_as_non_root() {
@@ -1743,7 +1736,7 @@ mod test {
         let (r1_upload_sender, r1_upload_receiver) = channel(100);
         let (r1_download_sender, r1_download_receiver) = channel(100);
         let router1 = Router::new(pub1, r1_download_sender, r1_upload_receiver);
-        let (r1_u, r1_d, mut r2_u, mut r2_d) = new_test_connection();
+        let (r1_u, r1_d, mut r2_u, mut r2_d) = new_test_connection().await;
         let r1 = router1.start().await;
         router1.add_peer(pub2, 1, r1_u, r1_d, true).await;
 
@@ -1873,22 +1866,6 @@ mod test {
         }
         sleep(Duration::from_millis(100)).await;
         assert!(router1.ascending_path.read().await.is_some());
-        assert!(match r2_d {
-            DownloadConnection::Test(mut stream) => match stream.try_recv() {
-                Ok(frame) => {
-                    unreachable!("Should have received nothing but got {:?}", frame);
-                }
-                Err(TryRecvError::Empty) => {
-                    true
-                }
-                Err(e) => {
-                    panic!("{:?}", e);
-                }
-            },
-            e => {
-                panic!("{:?}", e)
-            }
-        });
     }
     #[tokio::test]
     async fn receive_replayed_sequence_number() {
@@ -1916,22 +1893,7 @@ mod test {
         };
         r.handle_frame(Frame::TreeAnnouncement(frame.clone()), pub1)
             .await;
-        assert!(match rd {
-            DownloadConnection::Test(mut stream) => match stream.try_recv() {
-                Ok(frame) => {
-                    unreachable!("Should have received nothing but got {:?}", frame);
-                }
-                Err(TryRecvError::Empty) => {
-                    true
-                }
-                Err(e) => {
-                    panic!("{:?}", e);
-                }
-            },
-            e => {
-                panic!("{:?}", e)
-            }
-        })
+        assert!(rd.next().await.is_none());
     }
     #[tokio::test]
     async fn receive_announcement_with_loop() {
@@ -1965,22 +1927,7 @@ mod test {
         };
         r.handle_frame(Frame::TreeAnnouncement(announcement), pub1)
             .await;
-        assert!(match rd {
-            DownloadConnection::Test(mut stream) => match stream.try_recv() {
-                Ok(frame) => {
-                    unreachable!("Should have received nothing but got {:?}", frame);
-                }
-                Err(TryRecvError::Empty) => {
-                    true
-                }
-                Err(e) => {
-                    panic!("{:?}", e);
-                }
-            },
-            e => {
-                panic!("{:?}", e)
-            }
-        });
+        assert!(rd.next().await.is_none());
     }
     async fn set_second_announcement_for_root(r: &mut Router, peer_key: PublicKey) {
         r.announcements.write().await.insert(
@@ -2309,21 +2256,5 @@ mod test {
         assert_eq!(&ascending.origin, &entry.origin);
         assert_eq!(&ascending.target, &entry.target);
         assert!(r.candidate.read().await.is_none());
-        assert!(match rd {
-            DownloadConnection::Test(mut stream) => match stream.try_recv() {
-                Ok(frame) => {
-                    unreachable!("Should have received nothing but got {:?}", frame);
-                }
-                Err(TryRecvError::Empty) => {
-                    true
-                }
-                Err(e) => {
-                    panic!("{:?}", e);
-                }
-            },
-            e => {
-                panic!("{:?}", e)
-            }
-        });
     }
 }

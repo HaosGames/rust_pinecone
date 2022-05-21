@@ -15,8 +15,8 @@ mod wire_frame;
 
 
 pub use crate::client::Client;
-pub use crate::connection::{DownloadConnection, UploadConnection};
 pub use crate::session::Session;
+pub use crate::wire_frame::PineconeCodec;
 
 #[cfg(test)]
 #[allow(unused)]

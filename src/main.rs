@@ -55,8 +55,8 @@ async fn main() {
             info!("New Client: {:?}", addr);
             router1
                 .connect(
-                    UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
-                    DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
+                    Box::new(FramedWrite::new(writer, PineconeCodec)),
+                    Box::new(FramedRead::new(reader, PineconeCodec)),
                 )
                 .await
                 .unwrap();
@@ -98,8 +98,8 @@ async fn main() {
                 let (reader, writer) = socket.into_split();
                 match router
                     .connect(
-                        UploadConnection::Tcp(FramedWrite::new(writer, PineconeCodec)),
-                        DownloadConnection::Tcp(FramedRead::new(reader, PineconeCodec)),
+                        Box::new(FramedWrite::new(writer, PineconeCodec)),
+                        Box::new(FramedRead::new(reader, PineconeCodec)),
                     )
                     .await
                 {
