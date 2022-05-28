@@ -1,7 +1,7 @@
 use crate::error::RouterError;
 use crate::frames::Frame;
 use crate::router::{PublicKey, Router};
-use crate::session::Session;
+use crate::session::{ReceiveSession, SendSession};
 use log::{debug, trace};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 #[cfg(doc)]
 use crate::wire_frame::PineconeCodec;
 /// This is the object that is used to connect the router with other peers
-/// and get [`Session`]s with other nodes in the overlay network.
+/// and get Sessions with other nodes in the overlay network.
 ///
 /// Cloning this struct still gives access to the original router
 /// that was created with the `new` method.
@@ -47,6 +47,7 @@ impl Client {
                 let recv = download_receiver.recv().await;
                 match recv {
                     None => {
+                        trace!("Client download sender was dropped.");
                         break;
                     }
                     Some(frame) => match &frame {
@@ -56,7 +57,7 @@ impl Client {
                                 let public_key = packet.source_key;
                                 if let Err(e) = sender.send(frame).await {
                                     debug!(
-                                        "Session upload channel of {:?} closed. Removing sender.",
+                                        "ReceiveSession for {:?} was closed. Removing sender",
                                         public_key
                                     );
                                     drop(senders);
@@ -95,20 +96,39 @@ impl Client {
     pub async fn disconnect_peer(&self, peer_key: PublicKey) {
         self.router.disconnect_peer(peer_key).await;
     }
-    /// Dials a node with the given public key in the network and creates a session with it.
+    /// Dials a node with the given public key in the network and creates a [`SendSession`] for it.
     /// This doesn't communicate with the actual node so the session is created
-    /// regardless of wether this node is actually reachable or not.
-    pub async fn dial(&self, public_key: PublicKey) -> Session {
+    /// regardless of weather this node is actually reachable or not.
+    ///
+    /// SendSessions can be created multiple times for a given key.
+    pub async fn dial_send(&self, public_key: PublicKey) -> SendSession {
+        SendSession {
+            router_key: self.router_key,
+            dialed_key: public_key,
+            upload: self.upload.clone(),
+        }
+    }
+    /// Dials a node with the given public key in the network and creates a [`ReceiveSession`] for it.
+    /// This doesn't communicate with the actual node so the session is created
+    /// regardless of weather this node is actually reachable or not.
+    ///
+    /// ReceiveSessions can be created only once for a given key.
+    pub async fn dial_receive(&self, public_key: PublicKey) -> Result<ReceiveSession, DialError> {
+        if self.session_senders.read().await.contains_key(&public_key) {
+            return Err(DialError::SessionAlreadyExists);
+        }
         let (download_sender, download_receiver) = channel(100);
         self.session_senders
             .write()
             .await
             .insert(public_key, download_sender);
-        Session {
+        Ok(ReceiveSession {
             router_key: self.router_key,
             dialed_key: public_key,
-            upload: self.upload.clone(),
-            download: download_receiver,
-        }
+            download: download_receiver
+        })
     }
+}
+pub enum DialError {
+    SessionAlreadyExists
 }

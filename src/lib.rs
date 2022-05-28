@@ -15,7 +15,7 @@ mod wire_frame;
 
 
 pub use crate::client::Client;
-pub use crate::session::Session;
+pub use crate::session::*;
 pub use crate::wire_frame::PineconeCodec;
 
 #[cfg(test)]
