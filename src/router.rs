@@ -297,8 +297,9 @@ impl Router {
             // If the ascending path was also lost because it went via the now-dead
             // peering then clear that path (although we can't send a teardown) and
             // then bootstrap again.
-            //FIXME goes into deadlock here
-            if let Some(asc) = self.ascending_path.read().await.clone() {
+            let ascending = self.ascending_path.read().await;
+            if let Some(asc) = ascending.clone() {
+                drop(ascending);
                 if asc.destination == port {
                     self.teardown_path(0, asc.index.public_key, asc.index.path_id)
                         .await;
@@ -309,7 +310,9 @@ impl Router {
             // If the descending path was lost because it went via the now-dead
             // peering then clear that path (although we can't send a teardown) and
             // wait for another incoming setup.
-            if let Some(desc) = &self.descending_path.read().await.clone() {
+            let descending = self.descending_path.read().await;
+            if let Some(desc) = &descending.clone() {
+                drop(descending);
                 if desc.destination == port {
                     self.teardown_path(0, desc.index.public_key, desc.index.path_id)
                         .await;
@@ -608,7 +611,7 @@ impl Router {
                 }
             }
         }
-        trace!("Storing announcement {}", frame);
+        trace!("Storing announcement {:?}", frame);
         self.set_tree_announcement(from, frame.clone()).await;
         if !self.reparent_timer_expired().await {
             debug!("Waiting to reparent");

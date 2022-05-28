@@ -16,8 +16,8 @@ $ cargo build
 ## Usage
 ```shell
 $ ./target/debug/rust-pinecone
-[INFO  rust-pinecone] Router [69,56,205,245,126,111,40,254,20,177,36,26,76,121,47,208,76,24,131,161,83,1,123,54,82,171,139,176,144,107,40,110]
-[INFO  rust-pinecone] Listening on [::]:44995
+[INFO  rust_pinecone] Router [69,56,205,245,126,111,40,254,20,177,36,26,76,121,47,208,76,24,131,161,83,1,123,54,82,171,139,176,144,107,40,110]
+[INFO  rust_pinecone] Listening on [::]:44995
 Available actions:
 1) Add peer
 2) Send message
