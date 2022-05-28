@@ -1,4 +1,4 @@
-# Rust-Pinecone
+# Rust_Pinecone
 This is a port of the peer-to-peer overlay routing 
 mechanism [Pinecone](https://github.com/matrix-org/pinecone) 
 and aims to be interoperable with it, although it isn't yet because 
@@ -15,7 +15,7 @@ $ cargo build
 
 ## Usage
 ```shell
-$ ./target/debug/rust-pinecone
+$ ./target/debug/rust_pinecone
 [INFO  rust_pinecone] Router [69,56,205,245,126,111,40,254,20,177,36,26,76,121,47,208,76,24,131,161,83,1,123,54,82,171,139,176,144,107,40,110]
 [INFO  rust_pinecone] Listening on [::]:44995
 Available actions:
@@ -27,9 +27,9 @@ Available actions:
 Optionally add a listen address as an argument. 
 The default is `127.0.0.1:0` which assigns a random listen port.
 ```shell
-$ ./target/debug/rust-pinecone '0.0.0.0:0'
+$ ./target/debug/rust_pinecone '0.0.0.0:0'
   # or 
-$ ./target/debug/rust-pinecone '[::]:0'
+$ ./target/debug/rust_pinecone '[::]:0'
 ```
 Add a peer
 ```shell

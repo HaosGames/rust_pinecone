@@ -1,5 +1,5 @@
 [package]
-name = "rust-pinecone"
+name = "rust_pinecone"
 version = "0.1.0"
 edition = "2021"
 
