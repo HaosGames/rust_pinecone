@@ -1,12 +1,15 @@
+use crate::client::Client;
+use crate::client::DialError;
 use crate::connection::{DownloadConnection, UploadConnection};
 use crate::frames::{Frame, SnekPacket};
 use crate::router::Router;
 use crate::wire_frame::PineconeCodec;
-use ed25519_consensus::{SigningKey, VerificationKeyBytes};
+use ed25519_consensus::{SigningKey, VerificationKey, VerificationKeyBytes};
 use env_logger::WriteStyle;
 use log::{debug, info, trace, LevelFilter};
 use rand::thread_rng;
 use std::env::args;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::channel;
 use tokio_util::codec::{FramedRead, FramedWrite};
@@ -34,27 +37,26 @@ async fn main() {
 
     let signing_key = SigningKey::new(thread_rng());
     let verification_key = signing_key.verification_key();
-    let public_key = verification_key.to_bytes();
-    let (upload_sender, upload_receiver) = channel(100);
-    let (download_sender, mut download_receiver) = channel(100);
-    let router = Router::new(public_key, download_sender, upload_receiver);
-    let handle = router.start().await;
+    let client = Client::new(signing_key).await;
     info!(
         "Router {}",
         serde_json::to_string(&VerificationKeyBytes::from(verification_key)).unwrap()
     );
 
-    let listen_addr = args().nth(1).or(Some(String::from("127.0.0.1:0"))).unwrap();
+    let listen_addr = args()
+        .nth(1)
+        .or_else(|| Some(String::from("127.0.0.1:0")))
+        .unwrap();
     let listener = TcpListener::bind(listen_addr).await.unwrap();
     info!("Listening on {}", listener.local_addr().unwrap());
-    let router1 = router.clone();
+    let client1 = client.clone();
     tokio::spawn(async move {
         loop {
             let (socket, addr) = listener.accept().await.unwrap();
             let (reader, writer) = socket.into_split();
             info!("New Client: {:?}", addr);
-            router1
-                .connect(
+            client1
+                .connect_peer(
                     Box::new(FramedWrite::new(writer, PineconeCodec)),
                     Box::new(FramedRead::new(reader, PineconeCodec)),
                 )
@@ -62,31 +64,11 @@ async fn main() {
                 .unwrap();
         }
     });
-    tokio::spawn(async move {
-        loop {
-            match download_receiver.recv().await {
-                Some(frame) => match frame {
-                    Frame::SnekRouted(packet) => {
-                        println!("Received message from {:?}", packet.source_key);
-                        let message = String::from_utf8(packet.payload)
-                            .or::<()>(Ok(String::from("Message was not UTF-8")))
-                            .unwrap();
-                        println!("Message: {}", message);
-                    }
-                    _ => {}
-                },
-                None => {
-                    debug!("Local download channel broke.");
-                    break;
-                }
-            }
-        }
-    });
 
     loop {
         println!("Available actions:");
         println!("1) Add peer");
-        println!("2) Send message");
+        println!("2) Chat with peer");
         println!("3) Disconnect peer");
         println!("4) Stop router");
         match read_stdin_line().await.as_str() {
@@ -96,8 +78,8 @@ async fn main() {
                 info!("Connecting to {}", connect_addr);
                 let socket = TcpStream::connect(connect_addr).await.unwrap();
                 let (reader, writer) = socket.into_split();
-                match router
-                    .connect(
+                match client
+                    .connect_peer(
                         Box::new(FramedWrite::new(writer, PineconeCodec)),
                         Box::new(FramedRead::new(reader, PineconeCodec)),
                     )
@@ -111,37 +93,62 @@ async fn main() {
             }
             "2" => {
                 println!("Target key:");
-                let input = read_stdin_line().await;
-                let target_key: VerificationKeyBytes =
-                    serde_json::from_str(input.as_str()).unwrap();
-                println!("Message:");
-                let message = read_stdin_line().await;
-                let payload = message.as_bytes().to_vec();
-                upload_sender
-                    .send(Frame::SnekRouted(SnekPacket {
-                        destination_key: target_key.to_bytes(),
-                        source_key: public_key,
-                        payload,
-                    }))
-                    .await
-                    .unwrap();
+                if let Ok(target_key) = read_public_key().await {
+                    match client.dial_receive(target_key.to_bytes()).await {
+                        Ok(mut receive_session) => {
+                            tokio::spawn(async move {
+                                let key = target_key;
+                                loop {
+                                    let mut buf = [0u8; 20];
+                                    match receive_session.read(&mut buf).await {
+                                        Ok(0) => {
+                                            break;
+                                        }
+                                        Err(_e) => {
+                                            break;
+                                        }
+                                        _ => {}
+                                    }
+                                    let message = String::from_utf8(buf.to_vec())
+                                        .or_else::<(), _>(|_| {
+                                            Ok(String::from("Message was not UTF-8"))
+                                        })
+                                        .unwrap();
+                                    println!("{:?}> {}", key.as_bytes(), message);
+                                }
+                            });
+                        }
+                        Err(DialError::SessionAlreadyExists) => {
+                            println!("A session with this peer already exists")
+                        }
+                    }
+                    let mut send_session = client.dial_send(target_key.to_bytes()).await;
+                    loop {
+                        let input = read_stdin_line().await;
+                        if input.as_str() == "exit" {
+                            break;
+                        }
+                        send_session.write_all(input.as_bytes()).await.unwrap();
+                    }
+                } else {
+                    println!("Invalid key");
+                }
             }
             "3" => {
                 println!("Public Key:");
-                let input = read_stdin_line().await;
-                let target_key: VerificationKeyBytes =
-                    serde_json::from_str(input.as_str()).unwrap();
-                router.disconnect_peer(target_key.to_bytes()).await;
+                if let Ok(target_key) = read_public_key().await {
+                    client.disconnect_peer(target_key.to_bytes()).await;
+                } else {
+                    println!("Invalid key");
+                }
             }
             "4" => {
-                router.stop().await;
-                drop(upload_sender);
+                client.stop().await;
                 break;
             }
             _ => {}
         }
     }
-    handle.await.unwrap();
 }
 async fn read_stdin_line() -> String {
     tokio::task::spawn_blocking(|| {
@@ -151,4 +158,8 @@ async fn read_stdin_line() -> String {
     })
     .await
     .unwrap()
+}
+async fn read_public_key() -> serde_json::Result<VerificationKey> {
+    let input = read_stdin_line().await;
+    serde_json::from_str(input.as_str())
 }
