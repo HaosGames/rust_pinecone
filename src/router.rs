@@ -1,4 +1,3 @@
-use crate::connection::{DownloadConnection, UploadConnection};
 use crate::coordinates::Coordinates;
 use crate::error::RouterError;
 use crate::frames::TreeAnnouncement;
@@ -8,7 +7,7 @@ use crate::frames::{
 use crate::snek::{SnekPath, SnekPathIndex, SnekRouted};
 use crate::tree::{Root, TreeRouted};
 use crate::wait_timer::WaitTimer;
-use log::{debug, info, Log, trace, warn};
+use log::{debug, info, trace};
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::ops::Add;
@@ -92,7 +91,7 @@ impl Router {
             loop {
                 ticker.tick().await;
                 let running = router.running.read().await;
-                if *running == false {
+                if !(*running) {
                     break;
                 }
                 drop(running);
@@ -111,7 +110,7 @@ impl Router {
             loop {
                 ticker.tick().await;
                 let running = router.running.read().await;
-                if *running == false {
+                if !(*running) {
                     break;
                 }
                 drop(running);
@@ -126,7 +125,7 @@ impl Router {
             let mut upload = router.upload.lock().await;
             loop {
                 let running = router.running.read().await;
-                if *running == false {
+                if !(*running) {
                     break;
                 }
                 drop(running);
@@ -182,7 +181,7 @@ impl Router {
                     }
                 }
                 Ok(_e) => Err(RouterError::InvalidFrame),
-                Err(e) => Err(e.into()),
+                Err(e) => Err(e),
             },
             None => Err(RouterError::ConnectionClosed),
         };
@@ -223,7 +222,7 @@ impl Router {
         tokio::spawn(async move {
             loop {
                 let running = router.running.read().await;
-                if *running == false {
+                if !(*running) {
                     break;
                 }
                 drop(running);
@@ -346,7 +345,7 @@ impl Router {
         self.announcements
             .write()
             .await
-            .insert(of.clone(), announcement);
+            .insert(of, announcement);
     }
     async fn port(&self, of: PublicKey) -> Option<Port> {
         if *self.public_key == of {
@@ -358,20 +357,20 @@ impl Router {
                 None => {}
                 Some(peer) => {
                     if peer == &of {
-                        return Some(port.clone());
+                        return Some(*port);
                     }
                 }
             }
         }
-        return None;
+        None
     }
     async fn peers(&self) -> Vec<PublicKey> {
         let mut peers = Vec::new();
-        for (_port, peer) in &*self.ports.read().await {
+        for peer in self.ports.read().await.values() {
             match peer {
                 None => {}
                 Some(peer) => {
-                    peers.push(peer.clone());
+                    peers.push(*peer);
                 }
             }
         }
@@ -393,10 +392,7 @@ impl Router {
         }
         return match self.ports.read().await.get(&port) {
             None => None,
-            Some(peer) => match peer {
-                None => None,
-                Some(peer) => Some(peer.clone()),
-            },
+            Some(peer) => peer.as_ref().copied(),
         };
     }
     async fn current_sequence(&self) -> SequenceNumber {
@@ -519,17 +515,17 @@ impl Router {
                 }
             }
             Frame::SnekSetup(setup) => {
-                let from_port = self.port(from).await.unwrap().clone();
+                let from_port = self.port(from).await.unwrap();
                 let next_hop = self.next_tree_hop(&setup, from).await.unwrap();
-                let next_hop_port = self.port(next_hop).await.unwrap().clone();
+                let next_hop_port = self.port(next_hop).await.unwrap();
                 self.handle_setup(from_port, setup, next_hop_port).await;
             }
             Frame::SnekSetupACK(ack) => {
-                let port = self.port(from).await.unwrap().clone();
+                let port = self.port(from).await.unwrap();
                 self.handle_setup_ack(port, ack).await;
             }
             Frame::SnekTeardown(teardown) => {
-                let port = self.port(from).await.unwrap().clone();
+                let port = self.port(from).await.unwrap();
                 self.handle_teardown(port, teardown).await;
             }
         }
@@ -557,7 +553,7 @@ impl Router {
                 continue; // ignore peers that haven't sent us announcements
             }
             if let Some(announcement) = self.tree_announcement(peer).await {
-                if !(self.current_root().await == announcement.root) {
+                if self.current_root().await != announcement.root {
                     continue; // ignore peers that are following a different root or seq
                 }
 

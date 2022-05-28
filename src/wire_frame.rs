@@ -7,8 +7,6 @@ use crate::frames::{
 use crate::router::PublicKey;
 use crate::tree::{Root, RootAnnouncementSignature};
 use bytes::{Buf, BufMut, BytesMut};
-use log::{debug, trace};
-use std::io::{ErrorKind, Read};
 use std::time::SystemTime;
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -22,22 +20,6 @@ const FRAME_MAGIC_BYTES: [u8; 4] = [0x70, 0x69, 0x6e, 0x65];
 /// 4 magic bytes, 1 byte version, 1 byte type, 2 bytes extra, 2 bytes frame length
 const FRAME_HEADER_LENGTH: u32 = 10;
 
-pub struct WireFrame {
-    // Header
-    version: u8,
-    frame_type: u8,
-    extra: [u8; 2],
-    frame_length: u16,
-
-    // Payload
-    destination_len: u16,
-    destination: Option<Coordinates>,
-    destination_key: Option<PublicKey>,
-    source_len: u16,
-    source: Option<Coordinates>,
-    source_key: Option<PublicKey>,
-    payload: Vec<u8>,
-}
 #[derive(Debug)]
 pub struct PineconeCodec;
 impl Encoder<Frame> for PineconeCodec {
@@ -76,8 +58,8 @@ impl Encoder<Frame> for PineconeCodec {
             Frame::SnekSetup(packet) => {
                 10 + 2 + packet.destination.coordinates.len() * 8 + 32 + 32 + 32 + 8 + 8
             }
-            Frame::SnekSetupACK(packet) => 10 + 32 + 32 + 8 + 8,
-            Frame::SnekTeardown(packet) => 10 + 32 + 32 + 8 + 8,
+            Frame::SnekSetupACK(_packet) => 10 + 32 + 32 + 8 + 8,
+            Frame::SnekTeardown(_packet) => 10 + 32 + 32 + 8 + 8,
         } as u16;
         dst.reserve(len as usize);
 
@@ -203,8 +185,8 @@ impl Decoder for PineconeCodec {
             return Err(Self::Error::DecodingError("Not frame version 0"));
         }
         let frame_type = src.get_u8();
-        let extra1 = src.get_u8();
-        let extra2 = src.get_u8();
+        let _extra1 = src.get_u8();
+        let _extra2 = src.get_u8();
         let len = src.get_u16();
         if src.len() < (len - 10) as usize {
             return Err(Self::Error::DecodingError("Did not receive enough bytes"));
@@ -215,7 +197,7 @@ impl Decoder for PineconeCodec {
                 let root_sequence = src.get_u64();
                 let sig_len = src.get_u16();
                 let mut sigs = vec![];
-                for i in 0..sig_len {
+                for _i in 0..sig_len {
                     let sig_key = decode_key(src);
                     let sig_port = src.get_u64();
                     sigs.push(RootAnnouncementSignature {
@@ -223,7 +205,7 @@ impl Decoder for PineconeCodec {
                         destination_port: sig_port
                     })
                 }
-                return Ok(Some(Frame::TreeAnnouncement(TreeAnnouncement {
+                Ok(Some(Frame::TreeAnnouncement(TreeAnnouncement {
                     root: Root {
                         public_key: root_key,
                         sequence_number: root_sequence
@@ -231,25 +213,25 @@ impl Decoder for PineconeCodec {
                     signatures: sigs,
                     receive_time: SystemTime::now(),
                     receive_order: 0
-                })));
+                })))
             }
             2 /*TreePacket*/ => {
                 let dest_len = src.get_u16();
                 let mut dest = vec![];
-                for i in 0..dest_len {
+                for _i in 0..dest_len {
                     dest.push(src.get_u64());
                 }
                 let source_len = src.get_u16();
                 let mut source = vec![];
-                for i in 0..dest_len {
+                for _i in 0..dest_len {
                     source.push(src.get_u64());
                 }
                 let payload_len = len - 10 -4-dest_len*8-source_len*8;
                 let mut payload = vec![];
-                for i in 0..payload_len {
+                for _i in 0..payload_len {
                     payload.push(src.get_u8());
                 }
-                return Ok(Some(Frame::TreeRouted(TreePacket {
+                Ok(Some(Frame::TreeRouted(TreePacket {
                     source_coordinates: Coordinates::new(source),
                     destination_coordinates: Coordinates::new(dest),
                     payload
@@ -259,48 +241,48 @@ impl Decoder for PineconeCodec {
                 let dest_key = decode_key(src);
                 let source_len = src.get_u16();
                 let mut source = vec![];
-                for i in 0..source_len {
+                for _i in 0..source_len {
                     source.push(src.get_u64());
                 }
                 let root_key = decode_key(src);
                 let root_sequence = src.get_u64();
                 let path_id = src.get_u64();
-                return Ok(Some(Frame::SnekBootstrap(SnekBootstrap {
+                Ok(Some(Frame::SnekBootstrap(SnekBootstrap {
                     root: Root { public_key: root_key, sequence_number: root_sequence },
                     destination_key: dest_key,
                     source: Coordinates::new(source),
                     path_id
-                })));
+                })))
             }
             4 /*SnekBootstrapAck*/ => {
                 let dest_len = src.get_u16();
                 let mut dest = vec![];
-                for i in 0..dest_len {
+                for _i in 0..dest_len {
                     dest.push(src.get_u64());
                 }
                 let dest_key = decode_key(src);
                 let source_len = src.get_u16();
                 let mut source = vec![];
-                for i in 0..source_len {
+                for _i in 0..source_len {
                     source.push(src.get_u64());
                 }
                 let source_key = decode_key(src);
                 let root_key = decode_key(src);
                 let root_sequence = src.get_u64();
                 let path_id = src.get_u64();
-                return Ok(Some(Frame::SnekBootstrapACK(SnekBootstrapAck {
+                Ok(Some(Frame::SnekBootstrapACK(SnekBootstrapAck {
                     destination_coordinates: Coordinates::new(dest),
                     destination_key: dest_key,
                     source_coordinates: Coordinates::new(source),
                     source_key,
                     root: Root { public_key: root_key, sequence_number: root_sequence },
                     path_id
-                })));
+                })))
             }
             5 /*SnekSetup*/ => {
                 let dest_len = src.get_u16();
                 let mut dest = vec![];
-                for i in 0..dest_len {
+                for _i in 0..dest_len {
                     dest.push(src.get_u64());
                 }
                 let dest_key = decode_key(src);
@@ -308,52 +290,52 @@ impl Decoder for PineconeCodec {
                 let root_key = decode_key(src);
                 let root_sequence = src.get_u64();
                 let path_id = src.get_u64();
-                return Ok(Some(Frame::SnekSetup(SnekSetup {
+                Ok(Some(Frame::SnekSetup(SnekSetup {
                     root: Root { public_key: root_key, sequence_number: root_sequence },
                     destination: Coordinates::new(dest),
                     destination_key: dest_key,
                     source_key,
                     path_id
-                })));
+                })))
             }
             6 /*SnekSetupAck*/ => {
                 let dest_key = decode_key(src);
                 let root_key = decode_key(src);
                 let root_sequence = src.get_u64();
                 let path_id = src.get_u64();
-                return Ok(Some(Frame::SnekSetupACK(SnekSetupAck {
+                Ok(Some(Frame::SnekSetupACK(SnekSetupAck {
                     root: Root { public_key: root_key, sequence_number: root_sequence },
                     destination_key: dest_key,
                     path_id
-                })));
+                })))
             }
             7 /*SnekTeardown*/ => {
                 let dest_key = decode_key(src);
                 let root_key = decode_key(src);
                 let root_sequence = src.get_u64();
                 let path_id = src.get_u64();
-                return Ok(Some(Frame::SnekTeardown(SnekTeardown {
+                Ok(Some(Frame::SnekTeardown(SnekTeardown {
                     root: Root { public_key: root_key, sequence_number: root_sequence },
                     destination_key: dest_key,
                     path_id
-                })));
+                })))
             }
             8 /*SnekPacket*/ => {
                 let dest_key = decode_key(src);
                 let source_key = decode_key(src);
                 let payload_len = len -10-64;
                 let mut payload = vec![];
-                for i in 0..payload_len {
+                for _i in 0..payload_len {
                     payload.push(src.get_u8());
                 }
-                return Ok(Some(Frame::SnekRouted(SnekPacket {
+                Ok(Some(Frame::SnekRouted(SnekPacket {
                     destination_key: dest_key,
                     source_key,
                     payload
-                })));
+                })))
             }
             _ => {
-                return Err(Self::Error::DecodingError("Not a supported frame type"));
+                Err(Self::Error::DecodingError("Not a supported frame type"))
             }
         }
     }
