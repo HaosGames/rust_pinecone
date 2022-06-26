@@ -7,6 +7,7 @@ use crate::frames::{
 use crate::router::PublicKey;
 use crate::tree::{Root, RootAnnouncementSignature};
 use bytes::{Buf, BufMut, BytesMut};
+use ed25519_consensus::Signature;
 use std::time::SystemTime;
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -102,6 +103,7 @@ impl Encoder<Frame> for PineconeCodec {
                 for sig in packet.signatures {
                     dst.put_slice(sig.signing_public_key.as_slice());
                     dst.put_u64(sig.destination_port);
+                    dst.put_slice(&sig.signature.to_bytes());
                 }
             }
             Frame::SnekBootstrap(packet) => {
@@ -163,6 +165,13 @@ fn decode_key(src: &mut BytesMut) -> PublicKey {
     }
     key
 }
+fn decode_signature(src: &mut BytesMut) -> Signature {
+    let mut sig = [0; 64];
+    for i in 0..64 {
+        sig[i] = src.get_u8();
+    }
+    sig.into()
+}
 impl Decoder for PineconeCodec {
     type Item = Frame;
     type Error = RouterError;
@@ -200,9 +209,11 @@ impl Decoder for PineconeCodec {
                 for _i in 0..sig_len {
                     let sig_key = decode_key(src);
                     let sig_port = src.get_u64();
+                    let signature = decode_signature(src);
                     sigs.push(RootAnnouncementSignature {
                         signing_public_key: sig_key,
-                        destination_port: sig_port
+                        destination_port: sig_port,
+                        signature
                     })
                 }
                 Ok(Some(Frame::TreeAnnouncement(TreeAnnouncement {

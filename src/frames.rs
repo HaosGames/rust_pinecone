@@ -1,6 +1,8 @@
 use crate::coordinates::Coordinates;
 use crate::router::{Port, PublicKey, SequenceNumber, SnekPathId};
 use crate::tree::{Root, RootAnnouncementSignature};
+use bytes::{BufMut, Bytes, BytesMut};
+use ed25519_consensus::{Signature, SigningKey, VerificationKey, VerificationKeyBytes};
 use std::fmt::{Display, Formatter};
 use std::time::SystemTime;
 
@@ -35,37 +37,35 @@ pub struct TreeAnnouncement {
     pub(crate) receive_order: SequenceNumber,
 }
 impl TreeAnnouncement {
-    pub(crate) fn append_signature(
-        &self,
-        public_key: PublicKey,
-        destination_port: Port,
-    ) -> TreeAnnouncement {
-        // let public_key = keypair.public();
-        let mut to_sign = RootAnnouncementSignature {
+    pub(crate) fn append_signature(&mut self, keypair: SigningKey, destination_port: Port) {
+        let mut unsigned = BytesMut::new();
+        let public_key = keypair.verification_key().to_bytes();
+        unsigned.put_slice(&self.root.public_key);
+        unsigned.put_u64(self.root.sequence_number);
+        for sig in &self.signatures {
+            unsigned.put_slice(&sig.signing_public_key);
+            unsigned.put_u64(sig.destination_port);
+            unsigned.put_slice(&sig.signature.to_bytes());
+        }
+        unsigned.put_slice(&public_key);
+        unsigned.put_u64(destination_port);
+        let signature = keypair.sign(unsigned.as_ref());
+        self.signatures.push(RootAnnouncementSignature {
             signing_public_key: public_key,
-            destination_port: destination_port.clone(),
-            //TODO
-            // signature: None,
-        };
-        //TODO
-        // let unsigned = serde_json::to_vec(&to_sign).unwrap();
-        // let serialized_unsigned = unsigned.as_slice();
-        // let signature: Signature = keypair.sign(serialized_unsigned);
-        // to_sign.signature = Some(signature);
-        let mut announcement = self.clone();
-        announcement.signatures.push(to_sign);
-        announcement
+            destination_port,
+            signature,
+        });
     }
-    /*pub(crate) fn is_clean(&self, peer_public_key: &VerificationKeyBytes) -> bool {
+    pub(crate) fn is_clean(&self, peer_public_key: &PublicKey) -> bool {
         if self.root.public_key != self.signatures.get(0).unwrap().signing_public_key {
             return false; // if root_public_key doesn't match the first signing_public_key
         }
         if peer_public_key
             != &self
-            .signatures
-            .get(self.signatures.len() - 1)
-            .unwrap()
-            .signing_public_key
+                .signatures
+                .get(self.signatures.len() - 1)
+                .unwrap()
+                .signing_public_key
         {
             return false; // if the last signing key doesn't match the key the announcement came from
         }
@@ -82,15 +82,26 @@ impl TreeAnnouncement {
                 if self.signatures.get(i).unwrap().signing_public_key
                     == self.signatures.get(j).unwrap().signing_public_key
                 {
-                    return false;
+                    return false; // Loop detected
                 }
             }
         }
-
-        // TODO: Check signatures
-
+        let mut to_verify = BytesMut::new();
+        to_verify.put_slice(&self.root.public_key);
+        to_verify.put_u64(self.root.sequence_number);
+        for sig in &self.signatures {
+            to_verify.put_slice(&sig.signing_public_key);
+            to_verify.put_u64(sig.destination_port);
+            if let Ok(key) = VerificationKey::try_from(sig.signing_public_key) {
+                if key.verify(&sig.signature, to_verify.as_ref()).is_err() {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
         true
-    }*/
+    }
     pub(crate) fn is_loop_of_child(&self, public_key: &PublicKey) -> bool {
         for signature in &self.signatures {
             if &signature.signing_public_key == public_key {

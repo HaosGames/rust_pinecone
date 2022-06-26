@@ -30,7 +30,11 @@ pub struct SendSession {
     pub(crate) upload: Sender<Frame>,
 }
 impl AsyncRead for ReceiveSession {
-    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         match self.get_mut().download.poll_recv(cx) {
             Poll::Ready(result) => match result {
                 None => Poll::Ready(Err(Error::new(

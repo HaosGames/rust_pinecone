@@ -7,14 +7,15 @@ use crate::frames::{
 use crate::snek::{SnekPath, SnekPathIndex, SnekRouted};
 use crate::tree::{Root, TreeRouted};
 use crate::wait_timer::WaitTimer;
+use ed25519_consensus::SigningKey;
+use futures::SinkExt;
+use futures_sink::Sink;
 use log::{debug, info, trace};
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use futures::SinkExt;
-use futures_sink::Sink;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -35,13 +36,28 @@ pub(crate) const MAINTAIN_SNEK_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct Router {
+    private_key: SigningKey,
     public_key: Arc<PublicKey>,
     running: Arc<RwLock<bool>>,
 
     upload: Arc<Mutex<Receiver<Frame>>>,
     download: Arc<Sender<Frame>>,
-    upload_connections: Arc<RwLock<HashMap<PublicKey, Arc<Mutex<Box<dyn Sink<Frame, Error = RouterError> + Send + Unpin>>>>>>,
-    download_connections: Arc<RwLock<HashMap<PublicKey, Arc<Mutex<Box<dyn Stream<Item = Result<Frame, RouterError>> + Send + Unpin>>>>>>,
+    upload_connections: Arc<
+        RwLock<
+            HashMap<
+                PublicKey,
+                Arc<Mutex<Box<dyn Sink<Frame, Error = RouterError> + Send + Unpin>>>,
+            >,
+        >,
+    >,
+    download_connections: Arc<
+        RwLock<
+            HashMap<
+                PublicKey,
+                Arc<Mutex<Box<dyn Stream<Item = Result<Frame, RouterError>> + Send + Unpin>>>,
+            >,
+        >,
+    >,
     ports: Arc<RwLock<HashMap<Port, Option<PublicKey>>>>,
 
     parent: Arc<RwLock<PublicKey>>,
@@ -56,15 +72,16 @@ pub struct Router {
     candidate: Arc<RwLock<Option<SnekPath>>>,
 }
 impl Router {
-    pub fn new(key: PublicKey, download: Sender<Frame>, upload: Receiver<Frame>) -> Self {
+    pub fn new(key: SigningKey, download: Sender<Frame>, upload: Receiver<Frame>) -> Self {
         Self {
+            private_key: key.clone(),
             upload: Arc::new(Mutex::new(upload)),
-            public_key: Arc::new(key),
+            public_key: Arc::new(key.verification_key().to_bytes()),
             download: Arc::new(download),
             upload_connections: Arc::new(Default::default()),
             download_connections: Arc::new(Default::default()),
             ports: Default::default(),
-            parent: Arc::new(RwLock::new(key)),
+            parent: Arc::new(RwLock::new(key.verification_key().to_bytes())),
             announcements: Default::default(),
             sequence: Arc::new(RwLock::new(0)),
             ordering: Arc::new(RwLock::new(0)),
@@ -158,10 +175,8 @@ impl Router {
         mut download: Box<dyn Stream<Item = Result<Frame, RouterError>> + Send + Unpin>,
     ) -> Result<PublicKey, RouterError> {
         let port = self.get_new_port().await;
-        let announcement = self
-            .current_announcement()
-            .await
-            .append_signature(self.public_key(), port);
+        let mut announcement = self.current_announcement().await;
+        announcement.append_signature(self.private_key.clone(), port);
         upload.send(Frame::TreeAnnouncement(announcement)).await?;
         return match download.next().await {
             Some(decoding_result) => match decoding_result {
@@ -342,10 +357,7 @@ impl Router {
         self.announcements.read().await.get(&of).cloned()
     }
     async fn set_tree_announcement(&self, of: PublicKey, announcement: TreeAnnouncement) {
-        self.announcements
-            .write()
-            .await
-            .insert(of, announcement);
+        self.announcements.write().await.insert(of, announcement);
     }
     async fn port(&self, of: PublicKey) -> Option<Port> {
         if *self.public_key == of {
@@ -599,6 +611,11 @@ impl Router {
         frame.receive_time = SystemTime::now();
         frame.receive_order = self.next_ordering().await;
 
+        if !frame.is_clean(&from) {
+            debug!("Announcement integrity check failed. Dropping");
+            return;
+        }
+
         if let Some(announcement) = self.tree_announcement(from).await {
             if frame.has_same_root_key(&announcement) {
                 if frame.replayed_old_sequence(&announcement) {
@@ -709,10 +726,10 @@ impl Router {
     }
     async fn send_tree_announcement(&self, to: PublicKey, announcement: TreeAnnouncement) {
         let port = self.port(to).await.unwrap();
-        let signed_announcement = announcement.append_signature(self.public_key(), port);
+        let mut announcement = announcement;
+        announcement.append_signature(self.private_key.clone(), port);
         trace!("Sending tree announcement to port {}", port);
-        self.send(Frame::TreeAnnouncement(signed_announcement), to)
-            .await;
+        self.send(Frame::TreeAnnouncement(announcement), to).await;
     }
     async fn new_tree_announcement(&self) -> TreeAnnouncement {
         TreeAnnouncement {
@@ -1502,20 +1519,20 @@ mod test {
     use super::*;
     use crate::connection::new_test_connection;
     use crate::tree::RootAnnouncementSignature;
+    use crate::PineconeCodec;
     use env_logger::WriteStyle;
+    use futures::{StreamExt, TryStreamExt};
     use log::{trace, LevelFilter};
     use std::time::{Duration, SystemTime};
-    use futures::{StreamExt, TryStreamExt};
     use tokio::net::tcp::OwnedReadHalf;
     use tokio::sync::mpsc::channel;
     use tokio::sync::mpsc::error::TryRecvError;
     use tokio::time::sleep;
     use tokio_util::codec::FramedRead;
-    use crate::PineconeCodec;
 
     async fn get_test_router_with_peer(
-        router_key: PublicKey,
-        peer_key: PublicKey,
+        router_key: SigningKey,
+        peer_key: SigningKey,
         send_first_announcement: bool,
     ) -> (Router, Box<FramedRead<OwnedReadHalf, PineconeCodec>>) {
         let (r1_upload_sender, r1_upload_receiver) = channel(100);
@@ -1524,7 +1541,13 @@ mod test {
         let (r1_u, r1_d, mut r2_u, mut r2_d) = new_test_connection().await;
         let r1 = router1.start().await;
         router1
-            .add_peer(peer_key, 1, r1_u, r1_d, send_first_announcement)
+            .add_peer(
+                peer_key.verification_key().to_bytes(),
+                1,
+                r1_u,
+                r1_d,
+                send_first_announcement,
+            )
             .await;
         (router1, r2_d)
     }
@@ -1536,9 +1559,11 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (r, mut rd) = get_test_router_with_peer(pub1, pub2, true).await;
+        let key1 = SigningKey::from([1; 32]);
+        let key2 = SigningKey::from([2; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
+        let (r, mut rd) = get_test_router_with_peer(key1.clone(), key2.clone(), true).await;
         match rd.next().await {
             Some(Ok(Frame::TreeAnnouncement(ann))) => {
                 assert_eq!(
@@ -1548,13 +1573,8 @@ mod test {
                         sequence_number: 0
                     }
                 );
-                assert_eq!(
-                    ann.signatures.get(0).unwrap(),
-                    &RootAnnouncementSignature {
-                        signing_public_key: pub1,
-                        destination_port: 1
-                    }
-                );
+                assert_eq!(ann.signatures.get(0).unwrap().signing_public_key, pub1);
+                assert_eq!(ann.signatures.get(0).unwrap().destination_port, 1);
                 assert_eq!(ann.signatures.get(1), None)
             }
             Some(result) => {
@@ -1573,21 +1593,22 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
-        let announcement = Frame::TreeAnnouncement(TreeAnnouncement {
+        let key1 = SigningKey::from([2; 32]);
+        let key2 = SigningKey::from([1; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
+        let (r, mut rd) = get_test_router_with_peer(key2, key1.clone(), false).await;
+        let mut announcement = TreeAnnouncement {
             root: Root {
                 public_key: pub1,
                 sequence_number: 0,
             },
-            signatures: vec![RootAnnouncementSignature {
-                signing_public_key: pub1,
-                destination_port: 1,
-            }],
+            signatures: vec![],
             receive_time: SystemTime::now(),
             receive_order: 0,
-        });
+        };
+        announcement.append_signature(key1.clone(), 1);
+        let announcement = Frame::TreeAnnouncement(announcement);
         assert!(r.handle_frame(announcement, pub1).await.is_ok());
         match rd.next().await {
             Some(Ok(Frame::TreeAnnouncement(ann))) => {
@@ -1598,14 +1619,9 @@ mod test {
                         sequence_number: 0
                     }
                 );
-                assert_eq!(
-                    ann.signatures.get(0).unwrap(),
-                    &RootAnnouncementSignature {
-                        signing_public_key: pub2,
-                        destination_port: 1
-                    }
-                );
-                assert_eq!(ann.signatures.get(2), None);
+                assert_eq!(ann.signatures.get(0).unwrap().signing_public_key, pub2);
+                assert_eq!(ann.signatures.get(0).unwrap().destination_port, 1);
+                assert_eq!(ann.signatures.get(1), None);
             }
             Some(result) => {
                 unreachable!("Should have received TreeAnnouncement but got {:?}", result);
@@ -1623,21 +1639,22 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
-        let announcement = Frame::TreeAnnouncement(TreeAnnouncement {
+        let key1 = SigningKey::from([2; 32]);
+        let key2 = SigningKey::from([1; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
+        let (r, mut rd) = get_test_router_with_peer(key1, key2.clone(), false).await;
+        let mut announcement = TreeAnnouncement {
             root: Root {
                 public_key: pub2,
                 sequence_number: 0,
             },
-            signatures: vec![RootAnnouncementSignature {
-                signing_public_key: pub2,
-                destination_port: 1,
-            }],
+            signatures: vec![],
             receive_time: SystemTime::now(),
             receive_order: 0,
-        });
+        };
+        announcement.append_signature(key2.clone(), 1);
+        let announcement = Frame::TreeAnnouncement(announcement);
         assert!(r.handle_frame(announcement, pub2).await.is_ok());
         match rd.next().await {
             Some(Ok(Frame::TreeAnnouncement(ann))) => {
@@ -1648,20 +1665,10 @@ mod test {
                         sequence_number: 0
                     }
                 );
-                assert_eq!(
-                    ann.signatures.get(0).unwrap(),
-                    &RootAnnouncementSignature {
-                        signing_public_key: pub2,
-                        destination_port: 1
-                    }
-                );
-                assert_eq!(
-                    ann.signatures.get(1).unwrap(),
-                    &RootAnnouncementSignature {
-                        signing_public_key: pub1,
-                        destination_port: 1
-                    }
-                );
+                assert_eq!(ann.signatures.get(0).unwrap().signing_public_key, pub2);
+                assert_eq!(ann.signatures.get(0).unwrap().destination_port, 1);
+                assert_eq!(ann.signatures.get(1).unwrap().signing_public_key, pub1);
+                assert_eq!(ann.signatures.get(1).unwrap().destination_port, 1);
                 assert_eq!(ann.signatures.get(2), None);
             }
             Some(result) => {
@@ -1672,22 +1679,21 @@ mod test {
             }
         }
     }
-    async fn set_first_announcement(r: &mut Router, peer_key: PublicKey) {
-        r.announcements.write().await.insert(
-            peer_key,
-            TreeAnnouncement {
-                root: Root {
-                    public_key: peer_key,
-                    sequence_number: 0,
-                },
-                signatures: vec![RootAnnouncementSignature {
-                    signing_public_key: peer_key,
-                    destination_port: 1,
-                }],
-                receive_time: SystemTime::now(),
-                receive_order: 1,
+    async fn set_first_announcement(r: &mut Router, peer_key: SigningKey) {
+        let mut announcement = TreeAnnouncement {
+            root: Root {
+                public_key: peer_key.verification_key().to_bytes(),
+                sequence_number: 0,
             },
-        );
+            signatures: vec![],
+            receive_time: SystemTime::now(),
+            receive_order: 1,
+        };
+        announcement.append_signature(peer_key.clone(), 1);
+        r.announcements
+            .write()
+            .await
+            .insert(peer_key.verification_key().to_bytes(), announcement);
     }
     #[tokio::test]
     async fn drop_announcement_with_loop() {
@@ -1697,28 +1703,24 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
-        set_first_announcement(&mut r, pub1).await;
-        let frame = Frame::TreeAnnouncement(TreeAnnouncement {
+        let key1 = SigningKey::from([1; 32]);
+        let key2 = SigningKey::from([2; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
+        let (mut r, mut rd) = get_test_router_with_peer(key2.clone(), key1.clone(), false).await;
+        set_first_announcement(&mut r, key1.clone()).await;
+        let mut announcement = TreeAnnouncement {
             root: Root {
                 public_key: pub2,
                 sequence_number: 0,
             },
-            signatures: vec![
-                RootAnnouncementSignature {
-                    signing_public_key: pub2,
-                    destination_port: 1,
-                },
-                RootAnnouncementSignature {
-                    signing_public_key: pub1,
-                    destination_port: 1,
-                },
-            ],
+            signatures: vec![],
             receive_time: SystemTime::now(),
             receive_order: 0,
-        });
+        };
+        announcement.append_signature(key2.clone(), 1);
+        announcement.append_signature(key1.clone(), 1);
+        let frame = Frame::TreeAnnouncement(announcement);
         r.handle_frame(frame, pub1).await;
         assert!(rd.next().await.is_none());
     }
@@ -1730,11 +1732,13 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
+        let key1 = SigningKey::from([2; 32]);
+        let key2 = SigningKey::from([1; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
         let (r1_upload_sender, r1_upload_receiver) = channel(100);
         let (r1_download_sender, r1_download_receiver) = channel(100);
-        let router1 = Router::new(pub1, r1_download_sender, r1_upload_receiver);
+        let router1 = Router::new(key1, r1_download_sender, r1_upload_receiver);
         let (r1_u, r1_d, mut r2_u, mut r2_d) = new_test_connection().await;
         let r1 = router1.start().await;
         router1.add_peer(pub2, 1, r1_u, r1_d, true).await;
@@ -1748,13 +1752,8 @@ mod test {
                         sequence_number: 0
                     }
                 );
-                assert_eq!(
-                    ann.signatures.get(0).unwrap(),
-                    &RootAnnouncementSignature {
-                        signing_public_key: pub1,
-                        destination_port: 1
-                    }
-                );
+                assert_eq!(ann.signatures.get(0).unwrap().signing_public_key, pub1);
+                assert_eq!(ann.signatures.get(0).unwrap().destination_port, 1);
                 assert_eq!(ann.signatures.get(1), None)
             }
             Some(result) => {
@@ -1764,19 +1763,17 @@ mod test {
                 unreachable!("Should have received TreeAnnouncement but got nothing");
             }
         }
-        r2_u.send(Frame::TreeAnnouncement(TreeAnnouncement {
+        let mut announcement = TreeAnnouncement {
             root: Root {
                 public_key: pub2,
                 sequence_number: 0,
             },
-            signatures: vec![RootAnnouncementSignature {
-                signing_public_key: pub2,
-                destination_port: 1,
-            }],
+            signatures: vec![],
             receive_time: SystemTime::now(),
             receive_order: 0,
-        }))
-        .await;
+        };
+        announcement.append_signature(key2.clone(), 1);
+        r2_u.send(Frame::TreeAnnouncement(announcement)).await;
         match r2_d.next().await {
             Some(Ok(Frame::TreeAnnouncement(ann))) => {
                 assert_eq!(
@@ -1786,20 +1783,10 @@ mod test {
                         sequence_number: 0
                     }
                 );
-                assert_eq!(
-                    ann.signatures.get(0).unwrap(),
-                    &RootAnnouncementSignature {
-                        signing_public_key: pub2,
-                        destination_port: 1
-                    }
-                );
-                assert_eq!(
-                    ann.signatures.get(1).unwrap(),
-                    &RootAnnouncementSignature {
-                        signing_public_key: pub1,
-                        destination_port: 1
-                    }
-                );
+                assert_eq!(ann.signatures.get(0).unwrap().signing_public_key, pub2);
+                assert_eq!(ann.signatures.get(0).unwrap().destination_port, 1);
+                assert_eq!(ann.signatures.get(1).unwrap().signing_public_key, pub1);
+                assert_eq!(ann.signatures.get(1).unwrap().destination_port, 1);
                 assert_eq!(ann.signatures.get(2), None);
             }
             Some(result) => {
@@ -1874,23 +1861,23 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (mut r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
-        set_first_announcement(&mut r, pub2).await;
-        let frame = TreeAnnouncement {
+        let key1 = SigningKey::from([1; 32]);
+        let key2 = SigningKey::from([2; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
+        let (mut r, mut rd) = get_test_router_with_peer(key1, key2.clone(), false).await;
+        set_first_announcement(&mut r, key2.clone()).await;
+        let mut announcement = TreeAnnouncement {
             root: Root {
                 public_key: pub2,
                 sequence_number: 0,
             },
-            signatures: vec![RootAnnouncementSignature {
-                signing_public_key: pub2,
-                destination_port: 1,
-            }],
+            signatures: vec![],
             receive_time: SystemTime::now(),
             receive_order: 0,
         };
-        r.handle_frame(Frame::TreeAnnouncement(frame.clone()), pub1)
+        announcement.append_signature(key2.clone(), 1);
+        r.handle_frame(Frame::TreeAnnouncement(announcement.clone()), pub1)
             .await;
         assert!(rd.next().await.is_none());
     }
@@ -1902,54 +1889,43 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
-        set_first_announcement(&mut r, pub1).await;
-        let announcement = TreeAnnouncement {
+        let key1 = SigningKey::from([1; 32]);
+        let key2 = SigningKey::from([2; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
+        let (mut r, mut rd) = get_test_router_with_peer(key2.clone(), key1.clone(), false).await;
+        set_first_announcement(&mut r, key1.clone()).await;
+        let mut announcement = TreeAnnouncement {
             root: Root {
                 public_key: pub2,
                 sequence_number: 0,
             },
-            signatures: vec![
-                RootAnnouncementSignature {
-                    signing_public_key: pub2,
-                    destination_port: 1,
-                },
-                RootAnnouncementSignature {
-                    signing_public_key: pub1,
-                    destination_port: 1,
-                },
-            ],
+            signatures: vec![],
             receive_time: SystemTime::now(),
             receive_order: 0,
         };
+        announcement.append_signature(key2.clone(), 1);
+        announcement.append_signature(key1.clone(), 1);
         r.handle_frame(Frame::TreeAnnouncement(announcement), pub1)
             .await;
         assert!(rd.next().await.is_none());
     }
-    async fn set_second_announcement_for_root(r: &mut Router, peer_key: PublicKey) {
-        r.announcements.write().await.insert(
-            peer_key,
-            TreeAnnouncement {
-                root: Root {
-                    public_key: r.public_key(),
-                    sequence_number: 0,
-                },
-                signatures: vec![
-                    RootAnnouncementSignature {
-                        signing_public_key: r.public_key(),
-                        destination_port: 1,
-                    },
-                    RootAnnouncementSignature {
-                        signing_public_key: peer_key,
-                        destination_port: 1,
-                    },
-                ],
-                receive_time: SystemTime::now(),
-                receive_order: 0,
+    async fn set_second_announcement_for_root(r: &mut Router, peer_key: SigningKey) {
+        let mut announcement = TreeAnnouncement {
+            root: Root {
+                public_key: r.public_key(),
+                sequence_number: 0,
             },
-        );
+            signatures: vec![],
+            receive_time: SystemTime::now(),
+            receive_order: 0,
+        };
+        announcement.append_signature(r.private_key.clone(), 1);
+        announcement.append_signature(peer_key.clone(), 1);
+        r.announcements
+            .write()
+            .await
+            .insert(peer_key.verification_key().to_bytes(), announcement);
     }
     #[tokio::test]
     async fn bootstrap() {
@@ -1959,10 +1935,12 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (mut r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
-        set_first_announcement(&mut r, pub2).await;
+        let key1 = SigningKey::from([1; 32]);
+        let key2 = SigningKey::from([2; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
+        let (mut r, mut rd) = get_test_router_with_peer(key1.clone(), key2.clone(), false).await;
+        set_first_announcement(&mut r, key2).await;
         *r.parent.write().await = pub2;
         r.bootstrap_now().await;
         let frame = rd.next().await;
@@ -1988,11 +1966,11 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
-        set_first_announcement(&mut r, pub1).await;
-        *r.parent.write().await = pub2;
+        let key1 = SigningKey::from([1; 32]);
+        let key2 = SigningKey::from([2; 32]);
+        let (mut r, mut rd) = get_test_router_with_peer(key2.clone(), key1.clone(), false).await;
+        set_first_announcement(&mut r, key1.clone()).await;
+        *r.parent.write().await = key2.verification_key().to_bytes();
         r.bootstrap_now().await;
         let frame = rd.next().await;
         if let None = frame {
@@ -2008,11 +1986,13 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
-        set_first_announcement(&mut r, pub1).await;
-        set_second_announcement_for_root(&mut r, pub1).await;
+        let key1 = SigningKey::from([1; 32]);
+        let key2 = SigningKey::from([2; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
+        let (mut r, mut rd) = get_test_router_with_peer(key2.clone(), key1.clone(), false).await;
+        set_first_announcement(&mut r, key1.clone()).await;
+        set_second_announcement_for_root(&mut r, key1.clone()).await;
         *r.parent.write().await = pub2;
         let bootstrap = SnekBootstrap {
             root: Root {
@@ -2050,10 +2030,12 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (mut r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
-        set_first_announcement(&mut r, pub2).await;
+        let key1 = SigningKey::from([2; 32]);
+        let key2 = SigningKey::from([1; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
+        let (mut r, mut rd) = get_test_router_with_peer(key1.clone(), key2.clone(), false).await;
+        set_first_announcement(&mut r, key2.clone()).await;
         *r.parent.write().await = pub2;
         let ack = SnekBootstrapAck {
             destination_coordinates: Coordinates::new(vec![1]),
@@ -2128,11 +2110,13 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (mut r, mut rd) = get_test_router_with_peer(pub2, pub1, false).await;
-        set_first_announcement(&mut r, pub1).await;
-        set_second_announcement_for_root(&mut r, pub1).await;
+        let key1 = SigningKey::from([2; 32]);
+        let key2 = SigningKey::from([1; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
+        let (mut r, mut rd) = get_test_router_with_peer(key2, key1.clone(), false).await;
+        set_first_announcement(&mut r, key1.clone()).await;
+        set_second_announcement_for_root(&mut r, key1.clone()).await;
         *r.parent.write().await = pub2;
         let setup = SnekSetup {
             root: Root {
@@ -2202,10 +2186,12 @@ mod test {
         .filter_level(LevelFilter::Debug)
         .filter_module("rust_pinecone", LevelFilter::Trace)
         .init();*/
-        let pub1 = [1; 32];
-        let pub2 = [2; 32];
-        let (mut r, mut rd) = get_test_router_with_peer(pub1, pub2, false).await;
-        set_first_announcement(&mut r, pub2).await;
+        let key1 = SigningKey::from([1; 32]);
+        let key2 = SigningKey::from([2; 32]);
+        let pub1 = key1.verification_key().to_bytes();
+        let pub2 = key2.verification_key().to_bytes();
+        let (mut r, mut rd) = get_test_router_with_peer(key1, key2.clone(), false).await;
+        set_first_announcement(&mut r, key2.clone()).await;
         *r.parent.write().await = pub2;
         let ack = SnekSetupAck {
             root: Root {

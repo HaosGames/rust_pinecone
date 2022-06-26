@@ -2,20 +2,20 @@ use crate::error::RouterError;
 use crate::frames::Frame;
 use crate::router::{PublicKey, Router};
 use crate::session::{ReceiveSession, SendSession};
+#[cfg(doc)]
+use crate::wire_frame::PineconeCodec;
+use ed25519_consensus::SigningKey;
+use futures_sink::Sink;
 use log::{debug, trace};
 use std::collections::HashMap;
 use std::sync::Arc;
-use ed25519_consensus::SigningKey;
-use futures_sink::Sink;
+#[cfg(doc)]
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::RwLock;
 use tokio_stream::Stream;
 #[cfg(doc)]
 use tokio_util::codec::{FramedRead, FramedWrite};
-#[cfg(doc)]
-use tokio::io::{AsyncRead, AsyncWrite};
-#[cfg(doc)]
-use crate::wire_frame::PineconeCodec;
 /// This is the object that is used to connect the router with other peers
 /// and get Sessions with other nodes in the overlay network.
 ///
@@ -37,7 +37,7 @@ impl Client {
         let (download_sender, mut download_receiver) = channel(100);
         let client = Self {
             router_key: public_key,
-            router: Router::new(public_key, download_sender, upload_receiver),
+            router: Router::new(key, download_sender, upload_receiver),
             upload: upload_sender,
             session_senders: Arc::new(Default::default()),
         };
@@ -125,7 +125,7 @@ impl Client {
         Ok(ReceiveSession {
             router_key: self.router_key,
             dialed_key: public_key,
-            download: download_receiver
+            download: download_receiver,
         })
     }
 }

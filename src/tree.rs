@@ -1,6 +1,7 @@
 use crate::coordinates::Coordinates;
 use crate::frames::{SnekBootstrapAck, SnekSetup, TreePacket};
 use crate::router::{Port, PublicKey, SequenceNumber};
+use ed25519_consensus::Signature;
 use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
 
@@ -39,8 +40,7 @@ impl Display for Root {
 pub(crate) struct RootAnnouncementSignature {
     pub(crate) signing_public_key: PublicKey,
     pub(crate) destination_port: Port,
-    //TODO
-    // pub(crate) signature: Signature,
+    pub(crate) signature: Signature,
 }
 pub(crate) trait TreeRouted {
     fn destination_coordinates(&self) -> Coordinates;
