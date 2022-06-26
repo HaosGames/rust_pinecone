@@ -113,9 +113,9 @@ impl Client {
     /// regardless of weather this node is actually reachable or not.
     ///
     /// ReceiveSessions can be created only once for a given key.
-    pub async fn dial_receive(&self, public_key: PublicKey) -> Result<ReceiveSession, DialError> {
+    pub async fn dial_receive(&self, public_key: PublicKey) -> Result<ReceiveSession, RouterError> {
         if self.session_senders.read().await.contains_key(&public_key) {
-            return Err(DialError::SessionAlreadyExists);
+            return Err(RouterError::SessionAlreadyExists);
         }
         let (download_sender, download_receiver) = channel(100);
         self.session_senders
@@ -128,7 +128,4 @@ impl Client {
             download: download_receiver
         })
     }
-}
-pub enum DialError {
-    SessionAlreadyExists
 }

@@ -8,6 +8,7 @@ pub enum RouterError {
     InvalidFrame,
     DecodingError(&'static str),
     EncodingError(&'static str),
+    SessionAlreadyExists,
 }
 impl Display for RouterError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
