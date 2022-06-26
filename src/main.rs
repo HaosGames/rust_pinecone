@@ -1,6 +1,6 @@
 use crate::client::Client;
-use crate::client::DialError;
 use crate::connection::{DownloadConnection, UploadConnection};
+use crate::error::RouterError;
 use crate::frames::{Frame, SnekPacket};
 use crate::router::Router;
 use crate::wire_frame::PineconeCodec;
@@ -118,8 +118,11 @@ async fn main() {
                                 }
                             });
                         }
-                        Err(DialError::SessionAlreadyExists) => {
+                        Err(RouterError::SessionAlreadyExists) => {
                             println!("A session with this peer already exists")
+                        }
+                        Err(e) => {
+                            println!("Error: {:?}", e);
                         }
                     }
                     let mut send_session = client.dial_send(target_key.to_bytes()).await;
