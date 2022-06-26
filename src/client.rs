@@ -8,10 +8,12 @@ use ed25519_consensus::SigningKey;
 use futures_sink::Sink;
 use log::{debug, trace};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 #[cfg(doc)]
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::RwLock;
 use tokio_stream::Stream;
 #[cfg(doc)]
@@ -27,19 +29,22 @@ pub struct Client {
     router: Router,
     upload: Sender<Frame>,
     session_senders: Arc<RwLock<HashMap<PublicKey, Sender<Frame>>>>,
+    new_incoming: Arc<Sender<ReceiveSession>>,
 }
 #[allow(unused)]
 impl Client {
     /// Creates a pinecone router and spawns various tokio tasks for it.
-    pub async fn new(key: SigningKey) -> Self {
+    pub async fn new(key: SigningKey) -> (Self, Listener) {
         let public_key = key.verification_key().to_bytes();
         let (upload_sender, upload_receiver) = channel(100);
         let (download_sender, mut download_receiver) = channel(100);
+        let (new_incoming_sender, new_incoming_receiver) = channel(100);
         let client = Self {
             router_key: public_key,
             router: Router::new(key, download_sender, upload_receiver),
             upload: upload_sender,
             session_senders: Arc::new(Default::default()),
+            new_incoming: Arc::new(new_incoming_sender),
         };
         let client1 = client.clone();
         tokio::spawn(async move {
@@ -64,7 +69,18 @@ impl Client {
                                     client1.session_senders.write().await.remove(&public_key);
                                 }
                             } else {
-                                trace!("No session for {:?}", packet.source_key);
+                                trace!("No session for {:?}. Creating new one", packet.source_key);
+                                let (download_sender, download_receiver) = channel(100);
+                                client1
+                                    .session_senders
+                                    .write()
+                                    .await
+                                    .insert(packet.source_key, download_sender);
+                                client1.new_incoming.send(ReceiveSession {
+                                    router_key: client1.router_key,
+                                    dialed_key: packet.source_key,
+                                    download: download_receiver,
+                                });
                             }
                         }
                         e => {
@@ -76,7 +92,12 @@ impl Client {
             debug!("Stopped client download loop");
         });
         client.router.start().await;
-        client
+        (
+            client,
+            Listener {
+                pending: new_incoming_receiver,
+            },
+        )
     }
     pub async fn stop(&self) {
         self.router.stop().await;
@@ -127,5 +148,27 @@ impl Client {
             dialed_key: public_key,
             download: download_receiver,
         })
+    }
+}
+/// Stream of new incoming [`ReceiveSession`]s.
+///
+/// Handed out when creating a new Client.
+pub struct Listener {
+    pending: Receiver<ReceiveSession>,
+}
+impl Stream for Listener {
+    type Item = ReceiveSession;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.get_mut().pending.poll_recv(cx) {
+            Poll::Ready(result) => {
+                if let Some(session) = result {
+                    Poll::Ready(Some(session))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
