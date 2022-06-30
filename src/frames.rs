@@ -3,6 +3,7 @@ use crate::router::{Port, PublicKey, SequenceNumber, SnekPathId};
 use crate::tree::{Root, RootAnnouncementSignature};
 use bytes::{BufMut, Bytes, BytesMut};
 use ed25519_consensus::{Signature, SigningKey, VerificationKey, VerificationKeyBytes};
+use log::trace;
 use std::fmt::{Display, Formatter};
 use std::time::SystemTime;
 
@@ -58,7 +59,8 @@ impl TreeAnnouncement {
     }
     pub(crate) fn is_clean(&self, peer_public_key: &PublicKey) -> bool {
         if self.root.public_key != self.signatures.get(0).unwrap().signing_public_key {
-            return false; // if root_public_key doesn't match the first signing_public_key
+            trace!("root_public_key doesn't match the first signing_public_key");
+            return false;
         }
         if peer_public_key
             != &self
@@ -67,11 +69,13 @@ impl TreeAnnouncement {
                 .unwrap()
                 .signing_public_key
         {
-            return false; // if the last signing key doesn't match the key the announcement came from
+            trace!("the last signing key doesn't match the key the announcement came from");
+            return false;
         }
         for signature in &self.signatures {
             if signature.destination_port == 0 {
-                return false; // If a destination port is 0
+                trace!("destination port is 0");
+                return false;
             }
         }
         for i in 0..self.signatures.len() - 1 {
@@ -82,7 +86,8 @@ impl TreeAnnouncement {
                 if self.signatures.get(i).unwrap().signing_public_key
                     == self.signatures.get(j).unwrap().signing_public_key
                 {
-                    return false; // Loop detected
+                    trace!("loop detected");
+                    return false;
                 }
             }
         }
@@ -93,10 +98,17 @@ impl TreeAnnouncement {
             to_verify.put_slice(&sig.signing_public_key);
             to_verify.put_u64(sig.destination_port);
             if let Ok(key) = VerificationKey::try_from(sig.signing_public_key) {
-                if key.verify(&sig.signature, to_verify.as_ref()).is_err() {
-                    return false;
+                match key.verify(&sig.signature, to_verify.as_ref()) {
+                    Ok(_) => {
+                        to_verify.put_slice(sig.signature.to_bytes().as_ref());
+                    }
+                    Err(e) => {
+                        trace!("signature verification failed: {:?}", e);
+                        return false;
+                    }
                 }
             } else {
+                trace!("signing_public_key parsing failed");
                 return false;
             }
         }
