@@ -37,7 +37,7 @@ async fn main() {
 
     let signing_key = SigningKey::new(thread_rng());
     let verification_key = signing_key.verification_key();
-    let client = Client::new(signing_key).await;
+    let (client, _listener) = Client::new(signing_key).await;
     info!(
         "Router {}",
         serde_json::to_string(&VerificationKeyBytes::from(verification_key)).unwrap()
