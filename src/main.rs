@@ -94,7 +94,7 @@ async fn main() {
             "2" => {
                 println!("Target key:");
                 if let Ok(target_key) = read_public_key().await {
-                    match client.dial_receive(target_key.to_bytes()).await {
+                    match client.dial(target_key.to_bytes()).await {
                         Ok(mut receive_session) => {
                             tokio::spawn(async move {
                                 let key = target_key;

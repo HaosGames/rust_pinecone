@@ -1,7 +1,7 @@
 use crate::error::RouterError;
 use crate::frames::Frame;
 use crate::router::{PublicKey, Router};
-use crate::session::{ReceiveSession, SendSession};
+use crate::session::{SendSession, Session};
 #[cfg(doc)]
 use crate::wire_frame::PineconeCodec;
 use ed25519_consensus::SigningKey;
@@ -29,7 +29,7 @@ pub struct Client {
     router: Router,
     upload: Sender<Frame>,
     session_senders: Arc<RwLock<HashMap<PublicKey, Sender<Frame>>>>,
-    new_incoming: Arc<Sender<ReceiveSession>>,
+    new_incoming: Arc<Sender<Session>>,
 }
 #[allow(unused)]
 impl Client {
@@ -76,10 +76,11 @@ impl Client {
                                     .write()
                                     .await
                                     .insert(packet.source_key, download_sender);
-                                client1.new_incoming.send(ReceiveSession {
+                                client1.new_incoming.send(Session {
                                     router_key: client1.router_key,
                                     dialed_key: packet.source_key,
                                     download: download_receiver,
+                                    upload: client1.upload.clone(),
                                 });
                             }
                         }
@@ -129,12 +130,12 @@ impl Client {
             upload: self.upload.clone(),
         }
     }
-    /// Dials a node with the given public key in the network and creates a [`ReceiveSession`] for it.
+    /// Dials a node with the given public key in the network and creates a [`Session`] for it.
     /// This doesn't communicate with the actual node so the session is created
     /// regardless of weather this node is actually reachable or not.
     ///
-    /// ReceiveSessions can be created only once for a given key.
-    pub async fn dial_receive(&self, public_key: PublicKey) -> Result<ReceiveSession, RouterError> {
+    /// Sessions can be created only once for a given key.
+    pub async fn dial(&self, public_key: PublicKey) -> Result<Session, RouterError> {
         if self.session_senders.read().await.contains_key(&public_key) {
             return Err(RouterError::SessionAlreadyExists);
         }
@@ -143,10 +144,11 @@ impl Client {
             .write()
             .await
             .insert(public_key, download_sender);
-        Ok(ReceiveSession {
+        Ok(Session {
             router_key: self.router_key,
             dialed_key: public_key,
             download: download_receiver,
+            upload: self.upload.clone(),
         })
     }
 }
@@ -154,10 +156,10 @@ impl Client {
 ///
 /// Handed out when creating a new Client.
 pub struct Listener {
-    pending: Receiver<ReceiveSession>,
+    pending: Receiver<Session>,
 }
 impl Stream for Listener {
-    type Item = ReceiveSession;
+    type Item = Session;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.get_mut().pending.poll_recv(cx) {
