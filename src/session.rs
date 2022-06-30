@@ -35,6 +35,22 @@ pub struct SendSession {
     pub(crate) dialed_key: PublicKey,
     pub(crate) upload: Sender<Frame>,
 }
+impl Session {
+    pub fn peer_key(&self) -> PublicKey {
+        self.dialed_key
+    }
+    pub fn router_key(&self) -> PublicKey {
+        self.router_key
+    }
+}
+impl SendSession {
+    pub fn peer_key(&self) -> PublicKey {
+        self.dialed_key
+    }
+    pub fn router_key(&self) -> PublicKey {
+        self.router_key
+    }
+}
 impl AsyncRead for Session {
     fn poll_read(
         self: Pin<&mut Self>,

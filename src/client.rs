@@ -152,7 +152,7 @@ impl Client {
         })
     }
 }
-/// Stream of new incoming [`ReceiveSession`]s.
+/// Stream of new incoming [`Session`]s.
 ///
 /// Handed out when creating a new Client.
 pub struct Listener {
