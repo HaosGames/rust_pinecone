@@ -5,6 +5,7 @@ use env_logger::WriteStyle;
 use log::{debug, info, warn, LevelFilter};
 use rand::thread_rng;
 use std::env::args;
+use std::io::Write;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::{FramedRead, FramedWrite};
@@ -27,7 +28,7 @@ async fn main() {
         .write_style(WriteStyle::Always)
         .format_timestamp(None)
         .filter_level(LevelFilter::Debug)
-        .filter_module("rust_pinecone", LevelFilter::Trace)
+        //.filter_module("rust_pinecone", LevelFilter::Trace)
         .init();
 
     let signing_key = SigningKey::new(thread_rng());
@@ -122,8 +123,11 @@ async fn main() {
             "2" => {
                 println!("Target key:");
                 if let Ok(target_key) = read_public_key().await {
+                    println!("Entered chat");
                     let mut send_session = client.dial_send(target_key.to_bytes()).await;
                     loop {
+                        print!("> ");
+                        std::io::stdout().flush().unwrap();
                         let input = read_stdin_line().await;
                         if input.as_str() == "exit" {
                             break;

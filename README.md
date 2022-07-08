@@ -20,7 +20,7 @@ $ ./target/debug/rust_pinecone
 [INFO  rust_pinecone] Listening on [::]:44995
 Available actions:
 1) Add peer
-2) Send message
+2) Chat with peer
 3) Disconnect peer
 4) Stop router
 
@@ -36,7 +36,7 @@ Add a peer
 ```shell
 Available actions:
 1) Add peer
-2) Send message
+2) Chat with peer
 3) Disconnect peer
 4) Stop router
 1
@@ -47,14 +47,14 @@ Send a demo message to a peer
 ```shell
 Available actions:
 1) Add peer
-2) Send message
+2) Chat with peer
 3) Disconnect peer
 4) Stop router
 2
 Target key:
 [131,221,229,133,52,62,223,119,250,217,34,60,39,203,108,100,35,178,32,49,78,138,249,102,204,127,102,132,223,207,90,201]
-Message:
-Hello router
+Entered Chat
+> MESSAGE / exit (to exit the chat)
 ```
 The message will then be routed automagically 
 to the node with the target key.
