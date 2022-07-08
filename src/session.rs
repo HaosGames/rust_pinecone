@@ -36,6 +36,7 @@ pub struct SendSession {
     pub(crate) dialed_key: PublicKey,
     pub(crate) upload: Sender<Frame>,
 }
+#[allow(unused)]
 impl Session {
     pub fn peer_key(&self) -> PublicKey {
         self.dialed_key
@@ -44,6 +45,7 @@ impl Session {
         self.router_key
     }
 }
+#[allow(unused)]
 impl SendSession {
     pub fn peer_key(&self) -> PublicKey {
         self.dialed_key

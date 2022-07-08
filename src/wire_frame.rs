@@ -11,13 +11,16 @@ use ed25519_consensus::Signature;
 use std::time::SystemTime;
 use tokio_util::codec::{Decoder, Encoder};
 
+#[allow(unused)]
 /// MaxFrameSize is the maximum size that a single frame can be, including
 /// all headers.
 const MAX_FRAME_SIZE: u32 = 65535 * 3 + 16;
+#[allow(unused)]
 /// MaxPayloadSize is the maximum size that a single frame can contain
 /// as a payload, not including headers.
 const MAX_PAYLOAD_SIZE: u16 = 65535;
 const FRAME_MAGIC_BYTES: [u8; 4] = [0x70, 0x69, 0x6e, 0x65];
+#[allow(unused)]
 /// 4 magic bytes, 1 byte version, 1 byte type, 2 bytes extra, 2 bytes frame length
 const FRAME_HEADER_LENGTH: u32 = 10;
 

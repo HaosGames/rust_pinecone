@@ -6,7 +6,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 #[cfg(test)]
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(test)]
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
@@ -14,14 +14,17 @@ use tokio_util::codec::{FramedRead, FramedWrite};
 pub enum DownloadConnection {
     Tcp(FramedRead<OwnedReadHalf, PineconeCodec>),
     #[cfg(test)]
+    #[allow(unused)]
     Test(Receiver<Frame>),
 }
 #[derive(Debug)]
 pub enum UploadConnection {
     Tcp(FramedWrite<OwnedWriteHalf, PineconeCodec>),
     #[cfg(test)]
+    #[allow(unused)]
     Test(Sender<Frame>),
 }
+#[allow(unused)]
 impl DownloadConnection {
     pub(crate) async fn next(&mut self) -> Option<Result<Frame, RouterError>> {
         return match self {
@@ -34,6 +37,7 @@ impl DownloadConnection {
         };
     }
 }
+#[allow(unused)]
 impl UploadConnection {
     pub(crate) async fn send(&mut self, frame: Frame) -> Result<(), RouterError> {
         match self {

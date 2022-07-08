@@ -129,6 +129,7 @@ impl TreeAnnouncement {
             false
         }
     }
+    #[allow(unused)]
     pub(crate) fn replayed_current_sequence(&self, of: &TreeAnnouncement) -> bool {
         if self.root.sequence_number == of.root.sequence_number {
             true

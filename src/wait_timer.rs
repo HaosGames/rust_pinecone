@@ -24,6 +24,7 @@ impl WaitTimer {
             Err(_) => false,
         }
     }
+    #[allow(unused)]
     pub(crate) fn new_expired() -> WaitTimer {
         WaitTimer {
             last_time: SystemTime::now(),
