@@ -6,7 +6,7 @@ use crate::session::{SendSession, Session};
 use crate::wire_frame::PineconeCodec;
 use ed25519_consensus::SigningKey;
 use futures_sink::Sink;
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ pub struct Client {
 #[allow(unused)]
 impl Client {
     /// Creates a pinecone router and spawns various tokio tasks for it.
-    pub async fn new(key: SigningKey) -> (Self, Listener) {
+    pub async fn new(key: SigningKey) -> (Self, SessionListener) {
         let public_key = key.verification_key().to_bytes();
         let (upload_sender, upload_receiver) = channel(100);
         let (download_sender, mut download_receiver) = channel(100);
@@ -58,30 +58,38 @@ impl Client {
                     Some(frame) => match &frame {
                         Frame::SnekRouted(packet) => {
                             let senders = client1.session_senders.read().await;
-                            if let Some(sender) = senders.get(&packet.source_key) {
+                            if let Some(sender) = senders.get(&packet.source_key).cloned() {
                                 let public_key = packet.source_key;
                                 if let Err(e) = sender.send(frame).await {
                                     debug!(
-                                        "ReceiveSession for {:?} was closed. Removing sender",
+                                        "Session for {:?} was closed. Removing sender",
                                         public_key
                                     );
                                     drop(senders);
                                     client1.session_senders.write().await.remove(&public_key);
                                 }
                             } else {
+                                drop(senders);
                                 trace!("No session for {:?}. Creating new one", packet.source_key);
                                 let (download_sender, download_receiver) = channel(100);
+                                download_sender.send(frame.clone()).await;
                                 client1
                                     .session_senders
                                     .write()
                                     .await
                                     .insert(packet.source_key, download_sender);
-                                client1.new_incoming.send(Session {
-                                    router_key: client1.router_key,
-                                    dialed_key: packet.source_key,
-                                    download: download_receiver,
-                                    upload: client1.upload.clone(),
-                                });
+                                if let Err(e) = client1
+                                    .new_incoming
+                                    .send(Session {
+                                        router_key: client1.router_key,
+                                        dialed_key: packet.source_key,
+                                        download: download_receiver,
+                                        upload: client1.upload.clone(),
+                                    })
+                                    .await
+                                {
+                                    warn!("new session could not be created: {:?}", e);
+                                }
                             }
                         }
                         e => {
@@ -93,12 +101,7 @@ impl Client {
             debug!("Stopped client download loop");
         });
         client.router.start().await;
-        (
-            client,
-            Listener {
-                pending: new_incoming_receiver,
-            },
-        )
+        (client, new_incoming_receiver)
     }
     pub async fn stop(&self) {
         self.router.stop().await;
@@ -152,25 +155,7 @@ impl Client {
         })
     }
 }
-/// Stream of new incoming [`Session`]s.
+/// Channel Receiver of new incoming [`Session`]s.
 ///
 /// Handed out when creating a new Client.
-pub struct Listener {
-    pending: Receiver<Session>,
-}
-impl Stream for Listener {
-    type Item = Session;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.get_mut().pending.poll_recv(cx) {
-            Poll::Ready(result) => {
-                if let Some(session) = result {
-                    Poll::Ready(Some(session))
-                } else {
-                    Poll::Ready(None)
-                }
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
+pub type SessionListener = Receiver<Session>;

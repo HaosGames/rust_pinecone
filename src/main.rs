@@ -3,15 +3,17 @@ use crate::connection::{DownloadConnection, UploadConnection};
 use crate::error::RouterError;
 use crate::frames::{Frame, SnekPacket};
 use crate::router::Router;
+use crate::session::Session;
 use crate::wire_frame::PineconeCodec;
 use ed25519_consensus::{SigningKey, VerificationKey, VerificationKeyBytes};
 use env_logger::WriteStyle;
-use log::{debug, info, trace, LevelFilter};
+use log::{debug, info, trace, warn, LevelFilter};
 use rand::thread_rng;
 use std::env::args;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::channel;
+use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
 mod client;
@@ -37,7 +39,7 @@ async fn main() {
 
     let signing_key = SigningKey::new(thread_rng());
     let verification_key = signing_key.verification_key();
-    let (client, _listener) = Client::new(signing_key).await;
+    let (client, mut session_listener) = Client::new(signing_key).await;
     info!(
         "Router {}",
         serde_json::to_string(&VerificationKeyBytes::from(verification_key)).unwrap()
@@ -62,6 +64,39 @@ async fn main() {
                 )
                 .await
                 .unwrap();
+        }
+    });
+    tokio::spawn(async move {
+        loop {
+            match session_listener.recv().await {
+                Some(mut session) => {
+                    debug!("New session with {:?}", session.peer_key());
+                    tokio::spawn(async move {
+                        loop {
+                            let mut buf = [0u8; 20];
+                            match session.read(&mut buf).await {
+                                Ok(0) => {
+                                    debug!("session with {:?} ended", session.peer_key());
+                                    break;
+                                }
+                                Err(e) => {
+                                    warn!("error while reading from session: {:?}", e);
+                                    break;
+                                }
+                                _ => {}
+                            }
+                            let message = String::from_utf8(buf.to_vec())
+                                .or_else::<(), _>(|_| Ok(String::from("Message was not UTF-8")))
+                                .unwrap();
+                            println!("{:?}> {}", session.peer_key(), message);
+                        }
+                    });
+                }
+                None => {
+                    warn!("session_listener stream ended");
+                    break;
+                }
+            }
         }
     });
 
@@ -94,37 +129,6 @@ async fn main() {
             "2" => {
                 println!("Target key:");
                 if let Ok(target_key) = read_public_key().await {
-                    match client.dial(target_key.to_bytes()).await {
-                        Ok(mut receive_session) => {
-                            tokio::spawn(async move {
-                                let key = target_key;
-                                loop {
-                                    let mut buf = [0u8; 20];
-                                    match receive_session.read(&mut buf).await {
-                                        Ok(0) => {
-                                            break;
-                                        }
-                                        Err(_e) => {
-                                            break;
-                                        }
-                                        _ => {}
-                                    }
-                                    let message = String::from_utf8(buf.to_vec())
-                                        .or_else::<(), _>(|_| {
-                                            Ok(String::from("Message was not UTF-8"))
-                                        })
-                                        .unwrap();
-                                    println!("{:?}> {}", key.as_bytes(), message);
-                                }
-                            });
-                        }
-                        Err(RouterError::SessionAlreadyExists) => {
-                            println!("A session with this peer already exists")
-                        }
-                        Err(e) => {
-                            println!("Error: {:?}", e);
-                        }
-                    }
                     let mut send_session = client.dial_send(target_key.to_bytes()).await;
                     loop {
                         let input = read_stdin_line().await;

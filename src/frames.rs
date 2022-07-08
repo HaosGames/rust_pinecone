@@ -7,7 +7,7 @@ use log::trace;
 use std::fmt::{Display, Formatter};
 use std::time::SystemTime;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Frame {
     TreeRouted(TreePacket),
     SnekRouted(SnekPacket),

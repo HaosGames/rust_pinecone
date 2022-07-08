@@ -16,6 +16,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 /// that is the node with the public key that this session was created for.
 /// If the node doesn't exist in the network or routing of data fails due to another reason
 /// the data that is being sent is dropped by the network.
+#[derive(Debug)]
 pub struct Session {
     pub(crate) router_key: PublicKey,
     pub(crate) dialed_key: PublicKey,
@@ -29,7 +30,7 @@ pub struct Session {
 /// that is the node with the public key that this session was created for.
 /// If the node doesn't exist in the network or routing of data fails due to another reason
 /// the data that is being sent is dropped by the network.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SendSession {
     pub(crate) router_key: PublicKey,
     pub(crate) dialed_key: PublicKey,

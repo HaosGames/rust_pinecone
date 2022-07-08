@@ -14,7 +14,7 @@ mod wait_timer;
 mod wire_frame;
 
 pub use crate::client::Client;
-pub use crate::client::Listener;
+pub use crate::client::SessionListener;
 pub use crate::session::*;
 pub use crate::wire_frame::PineconeCodec;
 
