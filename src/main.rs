@@ -1,19 +1,12 @@
 use crate::client::Client;
-use crate::connection::{DownloadConnection, UploadConnection};
-use crate::error::RouterError;
-use crate::frames::{Frame, SnekPacket};
-use crate::router::Router;
-use crate::session::Session;
 use crate::wire_frame::PineconeCodec;
 use ed25519_consensus::{SigningKey, VerificationKey, VerificationKeyBytes};
 use env_logger::WriteStyle;
-use log::{debug, info, trace, warn, LevelFilter};
+use log::{debug, info, warn, LevelFilter};
 use rand::thread_rng;
 use std::env::args;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::channel;
-use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
 mod client;

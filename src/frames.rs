@@ -1,8 +1,8 @@
 use crate::coordinates::Coordinates;
 use crate::router::{Port, PublicKey, SequenceNumber, SnekPathId};
 use crate::tree::{Root, RootAnnouncementSignature};
-use bytes::{BufMut, Bytes, BytesMut};
-use ed25519_consensus::{Signature, SigningKey, VerificationKey, VerificationKeyBytes};
+use bytes::{BufMut, BytesMut};
+use ed25519_consensus::{SigningKey, VerificationKey};
 use log::trace;
 use std::fmt::{Display, Formatter};
 use std::time::SystemTime;

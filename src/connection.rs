@@ -3,7 +3,9 @@ use crate::frames::Frame;
 use crate::wire_frame::PineconeCodec;
 use futures::SinkExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+#[cfg(test)]
 use tokio::net::{TcpListener, TcpStream};
+#[cfg(test)]
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, FramedWrite};

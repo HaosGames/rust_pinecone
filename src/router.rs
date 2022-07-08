@@ -729,7 +729,9 @@ impl Router {
         let mut announcement = announcement;
         announcement.append_signature(self.private_key.clone(), port);
         trace!("Sending tree announcement to port {}", port);
-        self.send(Frame::TreeAnnouncement(announcement), to).await;
+        if let Err(e) = self.send(Frame::TreeAnnouncement(announcement), to).await {
+            debug!("Could not send announcement: {:?}", e);
+        }
     }
     async fn new_tree_announcement(&self) -> TreeAnnouncement {
         TreeAnnouncement {
@@ -935,7 +937,9 @@ impl Router {
 
         if let Some(peer) = self.next_snek_hop(&frame, true, false).await {
             trace!("Bootstrapping path {} ", frame.path_id);
-            self.send(Frame::SnekBootstrap(frame), peer).await;
+            if let Err(e) = self.send(Frame::SnekBootstrap(frame), peer).await {
+                debug!("Could not send bootstrap: {:?}", e);
+            }
         } else {
             trace!("Not bootstrapping because no next hop was found");
         }
@@ -1078,7 +1082,9 @@ impl Router {
             };
             if let Some(peer) = self.next_tree_hop(&frame, self.public_key()).await {
                 trace!("Responding to SnekBootstrap with Ack.");
-                self.send(Frame::SnekBootstrapACK(frame), peer).await;
+                if let Err(e) = self.send(Frame::SnekBootstrapACK(frame), peer).await {
+                    debug!("Could not send BootstrapAck: {:?}", e);
+                }
             } else {
                 debug!("No next tree hop for BootstrapAck");
             }
@@ -1182,7 +1188,9 @@ impl Router {
                     debug!("Next hop for SnekSetup is self. Dropping.");
                     return;
                 }
-                self.send(Frame::SnekSetup(setup), next_peer).await;
+                if let Err(e) = self.send(Frame::SnekSetup(setup), next_peer).await {
+                    debug!("Could not send SnekSetup: {:?}", e);
+                }
                 let index = SnekPathIndex {
                     public_key: self.public_key(),
                     path_id: ack.path_id.clone(),
@@ -1337,11 +1345,15 @@ impl Router {
                 destination_key: rx.source_key,
                 path_id: index.path_id,
             };
-            self.send(
-                Frame::SnekSetupACK(setup_ack),
-                self.get_peer_on_port(entry.source).await.unwrap(),
-            )
-            .await;
+            if let Err(e) = self
+                .send(
+                    Frame::SnekSetupACK(setup_ack),
+                    self.get_peer_on_port(entry.source).await.unwrap(),
+                )
+                .await
+            {
+                debug!("Could not send SnekSetupAck: {:?}", e);
+            }
             return;
         }
 
@@ -1355,7 +1367,9 @@ impl Router {
             return;
         } else {
             trace!("Forwarding SnekSetup.");
-            self.send(Frame::SnekSetup(rx.clone()), next_peer).await;
+            if let Err(e) = self.send(Frame::SnekSetup(rx.clone()), next_peer).await {
+                debug!("Could not forward SnekSetup: {:?}", e);
+            }
         }
         // Add a new routing table entry as we are intermediate to
         // the path.
@@ -1387,8 +1401,12 @@ impl Router {
                 if entry.source != 0 {
                     trace!("Forwarding SetupAck.");
                     let entry_source = self.get_peer_on_port(entry.source).await.unwrap();
-                    self.send(Frame::SnekSetupACK(rx.clone()), entry_source)
-                        .await;
+                    if let Err(e) = self
+                        .send(Frame::SnekSetupACK(rx.clone()), entry_source)
+                        .await
+                    {
+                        debug!("Could not forward SetupAck {:?}", e);
+                    }
                 }
                 trace!("Activating Path {:?}", key);
                 entry.active = true;
@@ -1484,7 +1502,9 @@ impl Router {
             let frame = router.get_teardown(path_key, path_id).await;
             for next_hop in router.teardown_path(from, path_key, path_id).await {
                 let peer = router.get_peer_on_port(next_hop).await.unwrap();
-                router.send(Frame::SnekTeardown(frame.clone()), peer).await;
+                if let Err(e) = router.send(Frame::SnekTeardown(frame.clone()), peer).await {
+                    debug!("Could not send Teardown: {:?}", e);
+                }
             }
         });
     }
@@ -1496,7 +1516,9 @@ impl Router {
     ) {
         let frame = self.get_teardown(path_key, path_id).await;
         let peer = self.get_peer_on_port(via).await.unwrap();
-        self.send(Frame::SnekTeardown(frame), peer).await;
+        if let Err(e) = self.send(Frame::SnekTeardown(frame), peer).await {
+            debug!("Could not send Teardown: {:?}", e);
+        }
     }
 
     async fn get_teardown(&self, path_key: PublicKey, path_id: SnekPathId) -> SnekTeardown {

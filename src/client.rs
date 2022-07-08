@@ -8,9 +8,7 @@ use ed25519_consensus::SigningKey;
 use futures_sink::Sink;
 use log::{debug, trace, warn};
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 #[cfg(doc)]
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{channel, Receiver, Sender};

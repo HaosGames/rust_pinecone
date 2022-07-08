@@ -23,7 +23,7 @@ impl From<std::io::Error> for RouterError {
     }
 }
 impl From<tokio::sync::mpsc::error::SendError<Frame>> for RouterError {
-    fn from(e: tokio::sync::mpsc::error::SendError<Frame>) -> Self {
+    fn from(_e: tokio::sync::mpsc::error::SendError<Frame>) -> Self {
         RouterError::ConnectionClosed
     }
 }
